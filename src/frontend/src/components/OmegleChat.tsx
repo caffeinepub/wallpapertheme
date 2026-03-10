@@ -473,6 +473,7 @@ export default function OmegleChat({ open, onClose }: OmegleChatProps) {
         );
         if (strangerVideoRef.current && streamRef.current) {
           strangerVideoRef.current.srcObject = streamRef.current;
+          strangerVideoRef.current.play().catch(() => {});
         }
       }, delay);
     },
@@ -489,7 +490,10 @@ export default function OmegleChat({ open, onClose }: OmegleChatProps) {
         audio: true,
       });
       streamRef.current = stream;
-      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+        localVideoRef.current.play().catch(() => {});
+      }
       setPermission("granted");
       setStep("world-select");
     } catch (err: any) {
@@ -592,6 +596,23 @@ export default function OmegleChat({ open, onClose }: OmegleChatProps) {
       localVideoRef.current.srcObject = streamRef.current;
     }
   }, [permission]);
+
+  // Fix: assign stream when chat step becomes active (video element now mounted)
+  useEffect(() => {
+    if (step === "chat" && localVideoRef.current && streamRef.current) {
+      localVideoRef.current.srcObject = streamRef.current;
+      localVideoRef.current.play().catch(() => {});
+    }
+  }, [step]);
+
+  // Fix: assign stream to stranger video when connected (element now mounted)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional
+  useEffect(() => {
+    if (connected && strangerVideoRef.current && streamRef.current) {
+      strangerVideoRef.current.srcObject = streamRef.current;
+      strangerVideoRef.current.play().catch(() => {});
+    }
+  }, [connected]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll only
   useEffect(() => {
