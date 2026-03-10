@@ -1,0 +1,138 @@
+@font-face {
+  font-family: "Outfit";
+  src: url("/assets/fonts/Outfit.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Bricolage Grotesque";
+  src: url("/assets/fonts/BricolageGrotesque.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0.12 0.02 285;
+    --foreground: 0.95 0.01 285;
+    --card: 0.16 0.025 285;
+    --card-foreground: 0.95 0.01 285;
+    --popover: 0.14 0.02 285;
+    --popover-foreground: 0.95 0.01 285;
+    --primary: 0.65 0.28 320;
+    --primary-foreground: 0.98 0.005 285;
+    --secondary: 0.22 0.04 285;
+    --secondary-foreground: 0.9 0.01 285;
+    --muted: 0.2 0.03 285;
+    --muted-foreground: 0.6 0.04 285;
+    --accent: 0.58 0.24 290;
+    --accent-foreground: 0.98 0.005 285;
+    --destructive: 0.55 0.22 25;
+    --destructive-foreground: 0.98 0.005 285;
+    --border: 0.25 0.04 285;
+    --input: 0.22 0.04 285;
+    --ring: 0.65 0.28 320;
+    --radius: 0.75rem;
+    --chart-1: 0.65 0.28 320;
+    --chart-2: 0.58 0.24 290;
+    --chart-3: 0.7 0.2 200;
+    --chart-4: 0.75 0.18 150;
+    --chart-5: 0.8 0.15 60;
+    --sidebar: 0.14 0.025 285;
+    --sidebar-foreground: 0.95 0.01 285;
+    --sidebar-primary: 0.65 0.28 320;
+    --sidebar-primary-foreground: 0.98 0.005 285;
+    --sidebar-accent: 0.58 0.24 290;
+    --sidebar-accent-foreground: 0.98 0.005 285;
+    --sidebar-border: 0.25 0.04 285;
+    --sidebar-ring: 0.65 0.28 320;
+  }
+
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: "Outfit", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+  }
+
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: oklch(0.12 0.02 285);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: oklch(0.4 0.15 320);
+    border-radius: 2px;
+  }
+}
+
+@layer utilities {
+  .gradient-text {
+    background: linear-gradient(
+      135deg,
+      oklch(0.75 0.25 320),
+      oklch(0.65 0.28 290)
+    );
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .gradient-border {
+    background: linear-gradient(
+      135deg,
+      oklch(0.65 0.28 320),
+      oklch(0.58 0.24 290)
+    );
+    padding: 1px;
+    border-radius: var(--radius);
+  }
+
+  .glass-card {
+    background: oklch(0.18 0.03 285 / 0.8);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid oklch(0.35 0.08 285 / 0.4);
+  }
+
+  .category-scroll::-webkit-scrollbar {
+    height: 0;
+  }
+
+  .wallpaper-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.75rem;
+  }
+
+  @media (min-width: 640px) {
+    .wallpaper-grid {
+      grid-template-columns: repeat(3, 1fr);
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .wallpaper-grid {
+      grid-template-columns: repeat(4, 1fr);
+    }
+  }
+}
