@@ -14,8 +14,6 @@ const PLAYER_COLORS = [
   { name: "Yellow", bg: "#eab308", light: "#fde047", zone: "yellow" },
 ];
 
-// Simple path of 52 steps around the board (positions 0-51)
-// Each player starts at different offsets: 0, 13, 26, 39
 const PLAYER_START = [0, 13, 26, 39];
 
 function createBeep(ctx: AudioContext, freq: number, dur: number) {
@@ -31,25 +29,40 @@ function createBeep(ctx: AudioContext, freq: number, dur: number) {
   osc.stop(ctx.currentTime + dur);
 }
 
+type GameMode = "players" | "computer" | null;
+
 export default function LudoGame({ open, onClose }: LudoGameProps) {
   const { allUsers, currentUser } = useReckon();
   const audioCtxRef = useRef<AudioContext | null>(null);
 
+  const [gameMode, setGameMode] = useState<GameMode>(null);
   const [gameStarted, setGameStarted] = useState(false);
   const [soundOn, setSoundOn] = useState(true);
   const [currentPlayer, setCurrentPlayer] = useState(0);
   const [diceValue, setDiceValue] = useState<number | null>(null);
   const [rolling, setRolling] = useState(false);
   const [winner, setWinner] = useState<number | null>(null);
+  const [computerThinking, setComputerThinking] = useState(false);
 
-  // Each player has one token with a position (0-51, 52 = home/won)
   const [positions, setPositions] = useState<number[]>([-1, -1, -1, -1]);
 
-  // Assign real users to players (up to 4, fill from allUsers)
-  const players = [
-    currentUser,
-    ...allUsers.filter((u) => u.id !== currentUser.id).slice(0, 3),
-  ].slice(0, 4);
+  const computerUser = {
+    id: "computer_ai",
+    name: "Computer",
+    email: "",
+    phone: "",
+    password: "",
+    city: "AI",
+    createdAt: 0,
+  };
+
+  const players =
+    gameMode === "computer"
+      ? [currentUser, computerUser]
+      : [
+          currentUser,
+          ...allUsers.filter((u) => u.id !== currentUser.id).slice(0, 3),
+        ].slice(0, 4);
 
   const playSound = useCallback(
     (type: "roll" | "move" | "win") => {
@@ -72,59 +85,121 @@ export default function LudoGame({ open, onClose }: LudoGameProps) {
     [soundOn],
   );
 
+  const doRoll = useCallback(
+    (
+      forPlayer: number,
+      onDone?: (val: number, newPositions: number[]) => void,
+    ) => {
+      let count = 0;
+      const interval = setInterval(() => {
+        setDiceValue(Math.floor(Math.random() * 6) + 1);
+        count++;
+        if (count >= 8) {
+          clearInterval(interval);
+          const finalVal = Math.floor(Math.random() * 6) + 1;
+          setDiceValue(finalVal);
+          setRolling(false);
+
+          setPositions((prev) => {
+            const next = [...prev];
+            const startPos = PLAYER_START[forPlayer];
+            if (next[forPlayer] === -1) {
+              if (finalVal === 6) {
+                next[forPlayer] = startPos;
+                playSound("move");
+              }
+            } else {
+              const newPos = next[forPlayer] + finalVal;
+              if (newPos >= 52) {
+                next[forPlayer] = 52;
+                setWinner(forPlayer);
+                playSound("win");
+              } else {
+                next[forPlayer] = newPos;
+                playSound("move");
+              }
+            }
+            onDone?.(finalVal, next);
+            return next;
+          });
+
+          if (finalVal !== 6) {
+            setCurrentPlayer((p) => {
+              const numPlayers = gameMode === "computer" ? 2 : players.length;
+              return (p + 1) % numPlayers;
+            });
+          }
+        }
+      }, 80);
+    },
+    [playSound, gameMode, players.length],
+  );
+
   const rollDice = () => {
-    if (rolling || !gameStarted || winner !== null) return;
+    if (rolling || !gameStarted || winner !== null || computerThinking) return;
+    if (gameMode === "computer" && currentPlayer === 1) return;
     setRolling(true);
     playSound("roll");
-    let count = 0;
-    const interval = setInterval(() => {
-      setDiceValue(Math.floor(Math.random() * 6) + 1);
-      count++;
-      if (count >= 8) {
-        clearInterval(interval);
-        const finalVal = Math.floor(Math.random() * 6) + 1;
-        setDiceValue(finalVal);
-        setRolling(false);
-        // Move token
-        setPositions((prev) => {
-          const next = [...prev];
-          const startPos = PLAYER_START[currentPlayer];
-          if (next[currentPlayer] === -1) {
-            // Token not on board yet, need a 6 to enter
-            if (finalVal === 6) {
-              next[currentPlayer] = startPos;
-              playSound("move");
-            }
-          } else {
-            const newPos = next[currentPlayer] + finalVal;
-            if (newPos >= 52) {
-              next[currentPlayer] = 52; // won!
-              setWinner(currentPlayer);
-              playSound("win");
-            } else {
-              next[currentPlayer] = newPos;
-              playSound("move");
-            }
-          }
-          return next;
-        });
-        // Next player
-        if (finalVal !== 6) {
-          setCurrentPlayer((p) => (p + 1) % players.length);
+    doRoll(currentPlayer, (finalVal, _newPositions) => {
+      if (gameMode === "computer" && finalVal !== 6 && winner === null) {
+        const nextP = (currentPlayer + 1) % 2;
+        if (nextP === 1) {
+          setComputerThinking(true);
+          setTimeout(() => {
+            setComputerThinking(false);
+            setRolling(true);
+            playSound("roll");
+            // Computer rolls
+            let count = 0;
+            const interval = setInterval(() => {
+              setDiceValue(Math.floor(Math.random() * 6) + 1);
+              count++;
+              if (count >= 8) {
+                clearInterval(interval);
+                const cv = Math.floor(Math.random() * 6) + 1;
+                setDiceValue(cv);
+                setRolling(false);
+                setPositions((prev) => {
+                  const next = [...prev];
+                  if (next[1] === -1) {
+                    if (cv === 6) {
+                      next[1] = PLAYER_START[1];
+                      playSound("move");
+                    }
+                  } else {
+                    const np = next[1] + cv;
+                    if (np >= 52) {
+                      next[1] = 52;
+                      setWinner(1);
+                      playSound("win");
+                    } else {
+                      next[1] = np;
+                      playSound("move");
+                    }
+                  }
+                  return next;
+                });
+                if (cv !== 6) {
+                  setCurrentPlayer(0);
+                }
+              }
+            }, 80);
+          }, 1500);
         }
       }
-    }, 80);
+    });
   };
 
   const resetGame = () => {
     setGameStarted(false);
+    setGameMode(null);
     setPositions([-1, -1, -1, -1]);
     setDiceValue(null);
     setCurrentPlayer(0);
     setWinner(null);
+    setComputerThinking(false);
   };
 
-  // Close audio context on unmount
   useEffect(() => {
     return () => {
       audioCtxRef.current?.close();
@@ -133,37 +208,26 @@ export default function LudoGame({ open, onClose }: LudoGameProps) {
 
   const diceFaces = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"];
 
-  // Draw simplified board - 15x15 grid with colored safe zones
-  // We'll use a visual CSS grid representation
   const boardCells = Array.from({ length: 15 }, (_, row) =>
     Array.from({ length: 15 }, (_, col) => ({ row, col })),
   );
 
   function getCellColor(row: number, col: number): string {
-    // Red zone (top-left)
     if (row < 6 && col < 6) return "#fca5a5";
-    // Blue zone (top-right)
     if (row < 6 && col > 8) return "#93c5fd";
-    // Green zone (bottom-left)
     if (row > 8 && col < 6) return "#86efac";
-    // Yellow zone (bottom-right)
     if (row > 8 && col > 8) return "#fde047";
-    // Center home
     if (row >= 6 && row <= 8 && col >= 6 && col <= 8) return "#c084fc";
-    // Path cells
     return "#f8fafc";
   }
 
   function getTokensAtCell(row: number, col: number): number[] {
-    // Map board positions to grid cells (simplified)
     const result: number[] = [];
-    for (let p = 0; p < players.length; p++) {
+    const numPlayers = gameMode === "computer" ? 2 : players.length;
+    for (let p = 0; p < numPlayers; p++) {
       const pos = positions[p];
-      if (pos === -1) continue;
-      if (pos === 52) continue; // in home
-      // Map position to approximate grid cell
+      if (pos === -1 || pos === 52) continue;
       const playerPos = (pos - PLAYER_START[p] + 52) % 52;
-      // Very simplified mapping - just place token near their color zone
       const targetRow = Math.floor(
         7 + Math.cos((playerPos / 52) * Math.PI * 2) * 5,
       );
@@ -178,6 +242,8 @@ export default function LudoGame({ open, onClose }: LudoGameProps) {
   }
 
   if (!open) return null;
+
+  const numPlayers = gameMode === "computer" ? 2 : players.length;
 
   return (
     <AnimatePresence>
@@ -212,12 +278,13 @@ export default function LudoGame({ open, onClose }: LudoGameProps) {
                   className="text-xs"
                   style={{ color: "rgba(200,150,255,0.7)" }}
                 >
-                  {players.length} players
+                  {gameMode === "computer"
+                    ? "2 players (vs Computer)"
+                    : `${numPlayers} players`}
                 </p>
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {/* Sound toggle */}
               <button
                 type="button"
                 data-ocid="ludo.sound_toggle"
@@ -234,7 +301,6 @@ export default function LudoGame({ open, onClose }: LudoGameProps) {
               >
                 {soundOn ? "🔊" : "🔇"}
               </button>
-              {/* Exit */}
               <button
                 type="button"
                 data-ocid="ludo.exit_button"
@@ -255,7 +321,7 @@ export default function LudoGame({ open, onClose }: LudoGameProps) {
           </div>
 
           <div className="flex flex-col md:flex-row gap-4 p-4">
-            {/* Ludo Board */}
+            {/* Board */}
             <div className="flex-shrink-0">
               <div
                 className="grid rounded-xl overflow-hidden"
@@ -298,61 +364,113 @@ export default function LudoGame({ open, onClose }: LudoGameProps) {
 
             {/* Right panel */}
             <div className="flex-1 flex flex-col gap-3">
-              {/* Players */}
-              <div className="space-y-2">
-                {players.map((player, idx) => (
-                  <div
-                    key={player.id}
-                    className="flex items-center gap-2.5 px-3 py-2 rounded-xl transition-all"
+              {/* Mode selection (before game started) */}
+              {!gameStarted && !gameMode && (
+                <div className="space-y-2">
+                  <p
+                    className="text-xs text-center"
+                    style={{ color: "rgba(200,150,255,0.7)" }}
+                  >
+                    Select Game Mode
+                  </p>
+                  <button
+                    type="button"
+                    data-ocid="ludo.mode_vs_players_button"
+                    onClick={() => setGameMode("players")}
+                    className="w-full py-2.5 rounded-xl font-semibold text-sm transition-all hover:scale-105 flex items-center justify-center gap-2"
                     style={{
-                      background:
-                        currentPlayer === idx && gameStarted
-                          ? `${PLAYER_COLORS[idx].bg}22`
-                          : "rgba(255,255,255,0.05)",
-                      border: `1px solid ${
-                        currentPlayer === idx && gameStarted
-                          ? `${PLAYER_COLORS[idx].bg}66`
-                          : "rgba(255,255,255,0.08)"
-                      }`,
+                      background: "linear-gradient(135deg, #0ea5e9, #6366f1)",
+                      color: "white",
+                      boxShadow: "0 0 15px rgba(99,102,241,0.3)",
                     }}
                   >
-                    <div
-                      className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0"
-                      style={{ background: getAvatarColor(player.id) }}
-                    >
-                      {getInitials(player.name)}
-                    </div>
-                    <div
-                      className="w-3 h-3 rounded-full flex-shrink-0"
-                      style={{
-                        background: PLAYER_COLORS[idx].bg,
-                        boxShadow: `0 0 6px ${PLAYER_COLORS[idx].bg}`,
-                      }}
-                    />
-                    <p className="text-xs font-medium text-white flex-1 truncate">
-                      {player.name}
-                      {player.id === currentUser.id && " (You)"}
-                    </p>
-                    <span
-                      className="text-[10px]"
-                      style={{ color: PLAYER_COLORS[idx].light }}
-                    >
-                      {positions[idx] === -1
-                        ? "Ready"
-                        : positions[idx] === 52
-                          ? "🏆 Won!"
-                          : `Pos ${positions[idx]}`}
-                    </span>
-                    {currentPlayer === idx &&
-                      gameStarted &&
-                      winner === null && (
-                        <span className="text-xs animate-pulse">▶</span>
-                      )}
-                  </div>
-                ))}
-              </div>
+                    👥 vs Players
+                  </button>
+                  <button
+                    type="button"
+                    data-ocid="ludo.mode_vs_computer_button"
+                    onClick={() => setGameMode("computer")}
+                    className="w-full py-2.5 rounded-xl font-semibold text-sm transition-all hover:scale-105 flex items-center justify-center gap-2"
+                    style={{
+                      background: "linear-gradient(135deg, #7c3aed, #a855f7)",
+                      color: "white",
+                      boxShadow: "0 0 15px rgba(120,60,255,0.3)",
+                    }}
+                  >
+                    🤖 vs Computer
+                  </button>
+                </div>
+              )}
 
-              {/* Winner banner */}
+              {/* Players list */}
+              {gameMode && (
+                <div className="space-y-2">
+                  {players.slice(0, numPlayers).map((player, idx) => (
+                    <div
+                      key={player.id}
+                      className="flex items-center gap-2.5 px-3 py-2 rounded-xl transition-all"
+                      style={{
+                        background:
+                          currentPlayer === idx && gameStarted
+                            ? `${PLAYER_COLORS[idx].bg}22`
+                            : "rgba(255,255,255,0.05)",
+                        border: `1px solid ${currentPlayer === idx && gameStarted ? `${PLAYER_COLORS[idx].bg}66` : "rgba(255,255,255,0.08)"}`,
+                      }}
+                    >
+                      <div
+                        className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0"
+                        style={{
+                          background:
+                            player.id === "computer_ai"
+                              ? "#7c3aed"
+                              : getAvatarColor(player.id),
+                        }}
+                      >
+                        {player.id === "computer_ai"
+                          ? "🤖"
+                          : getInitials(player.name)}
+                      </div>
+                      <div
+                        className="w-3 h-3 rounded-full flex-shrink-0"
+                        style={{
+                          background: PLAYER_COLORS[idx].bg,
+                          boxShadow: `0 0 6px ${PLAYER_COLORS[idx].bg}`,
+                        }}
+                      />
+                      <p className="text-xs font-medium text-white flex-1 truncate">
+                        {player.name}
+                        {player.id === currentUser.id && " (You)"}
+                      </p>
+                      <span
+                        className="text-[10px]"
+                        style={{ color: PLAYER_COLORS[idx].light }}
+                      >
+                        {positions[idx] === -1
+                          ? "Ready"
+                          : positions[idx] === 52
+                            ? "🏆 Won!"
+                            : `Pos ${positions[idx]}`}
+                      </span>
+                      {currentPlayer === idx &&
+                        gameStarted &&
+                        winner === null && (
+                          <span className="text-xs animate-pulse">▶</span>
+                        )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Computer thinking */}
+              {computerThinking && (
+                <p
+                  className="text-xs text-center animate-pulse"
+                  style={{ color: "rgba(200,150,255,0.7)" }}
+                >
+                  🤖 Computer is thinking...
+                </p>
+              )}
+
               {winner !== null && (
                 <div
                   className="text-center py-3 rounded-xl"
@@ -368,7 +486,6 @@ export default function LudoGame({ open, onClose }: LudoGameProps) {
                 </div>
               )}
 
-              {/* Dice */}
               {gameStarted && winner === null && (
                 <div className="text-center">
                   <p
@@ -384,7 +501,11 @@ export default function LudoGame({ open, onClose }: LudoGameProps) {
                     type="button"
                     data-ocid="ludo.dice_button"
                     onClick={rollDice}
-                    disabled={rolling}
+                    disabled={
+                      rolling ||
+                      computerThinking ||
+                      (gameMode === "computer" && currentPlayer === 1)
+                    }
                     className="text-5xl transition-transform hover:scale-110 active:scale-95 disabled:opacity-50"
                     style={{
                       filter: "drop-shadow(0 0 8px rgba(150,100,255,0.6))",
@@ -403,9 +524,8 @@ export default function LudoGame({ open, onClose }: LudoGameProps) {
                 </div>
               )}
 
-              {/* Start / Play Again buttons */}
               <div className="flex gap-2 mt-auto">
-                {!gameStarted ? (
+                {gameMode && !gameStarted ? (
                   <button
                     type="button"
                     data-ocid="ludo.start_button"

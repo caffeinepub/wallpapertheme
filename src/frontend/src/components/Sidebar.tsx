@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Gamepad2,
+  Grid3X3,
   LogOut,
   MapPin,
   MessageCirclePlus,
@@ -26,6 +27,7 @@ import {
 } from "../App";
 import type { Conversation, User } from "../types";
 import LudoGame from "./LudoGame";
+import TicTacToe3D from "./TicTacToe3D";
 
 interface SidebarProps {
   onNewGroup: () => void;
@@ -68,6 +70,7 @@ export default function Sidebar({ onNewGroup }: SidebarProps) {
   const [showNewChat, setShowNewChat] = useState(false);
   const [userSearch, setUserSearch] = useState("");
   const [showLudo, setShowLudo] = useState(false);
+  const [showTtt, setShowTtt] = useState(false);
 
   const onlineIds = new Set(onlineUsers.map((u) => u.id));
 
@@ -223,6 +226,16 @@ export default function Sidebar({ onNewGroup }: SidebarProps) {
         >
           <Gamepad2 size={13} />
         </Button>
+        <Button
+          data-ocid="sidebar.ttt_button"
+          size="sm"
+          variant="secondary"
+          className="h-8 px-2"
+          onClick={() => setShowTtt(true)}
+          title="Tic-Tac-Toe"
+        >
+          <Grid3X3 size={13} />
+        </Button>
       </div>
 
       {/* Conversation list */}
@@ -276,7 +289,6 @@ export default function Sidebar({ onNewGroup }: SidebarProps) {
                       backgroundColor: "oklch(0.18 0.03 270 / 0.6)",
                     }}
                   >
-                    {/* Avatar */}
                     <div className="relative flex-shrink-0">
                       <div
                         className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold text-white"
@@ -297,8 +309,6 @@ export default function Sidebar({ onNewGroup }: SidebarProps) {
                         />
                       )}
                     </div>
-
-                    {/* Info */}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
                         <p className="text-sm font-medium truncate">{name}</p>
@@ -404,6 +414,9 @@ export default function Sidebar({ onNewGroup }: SidebarProps) {
 
       {/* Ludo Game */}
       <LudoGame open={showLudo} onClose={() => setShowLudo(false)} />
+
+      {/* Tic-Tac-Toe */}
+      <TicTacToe3D open={showTtt} onClose={() => setShowTtt(false)} />
     </div>
   );
 }

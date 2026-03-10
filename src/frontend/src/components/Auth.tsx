@@ -2,9 +2,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Toaster } from "@/components/ui/sonner";
-import { Eye, EyeOff, Lock, Mail, Phone, User } from "lucide-react";
+import {
+  Eye,
+  EyeOff,
+  Globe,
+  Lock,
+  Mail,
+  Mic,
+  MicOff,
+  Phone,
+  User,
+} from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { genId, loadFromStorage, saveToStorage } from "../App";
 import type { User as UserType } from "../types";
@@ -14,6 +24,14 @@ interface AuthProps {
 }
 
 type Mode = "login" | "register";
+type LangCode = "en" | "hi" | "gu" | "hinglish";
+
+const LANG_LABELS: Record<LangCode, string> = {
+  en: "English",
+  hi: "हिंदी",
+  gu: "ગુજરાતી",
+  hinglish: "Hinglish",
+};
 
 export default function Auth({ onLogin }: AuthProps) {
   const [mode, setMode] = useState<Mode>("login");
@@ -28,6 +46,15 @@ export default function Auth({ onLogin }: AuthProps) {
   const [regPhone, setRegPhone] = useState("+91 ");
   const [regPass, setRegPass] = useState("");
   const [regConfirm, setRegConfirm] = useState("");
+
+  // Translation widget state
+  const [showTranslate, setShowTranslate] = useState(false);
+  const [translateLang, setTranslateLang] = useState<LangCode>("hi");
+  const [translateInput, setTranslateInput] = useState("");
+  const [translateResult, setTranslateResult] = useState("");
+  const [translating, setTranslating] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const recognitionRef = useRef<{ stop: () => void } | null>(null);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -112,13 +139,76 @@ export default function Auth({ onLogin }: AuthProps) {
     }, 600);
   };
 
+  const handleTranslate = async () => {
+    if (!translateInput.trim()) return;
+    setTranslating(true);
+    setTranslateResult("");
+    try {
+      const from = "en";
+      const to = translateLang === "hinglish" ? "hi" : translateLang;
+      const url = `https://api.mymemory.translated.web/get?q=${encodeURIComponent(translateInput)}&langpair=${from}|${to}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      let result = data.responseData?.translatedText || "Translation failed";
+      if (translateLang === "hinglish") {
+        result = `${result} (Hinglish)`;
+      }
+      setTranslateResult(result);
+    } catch {
+      setTranslateResult("Translation error. Try again.");
+    } finally {
+      setTranslating(false);
+    }
+  };
+
+  const toggleMic = () => {
+    if (recording) {
+      recognitionRef.current?.stop();
+      setRecording(false);
+      return;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SpeechRecognitionAPI =
+      (window as any).SpeechRecognition ||
+      (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionAPI) {
+      toast.error("Microphone not supported in this browser");
+      return;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const recognition = new SpeechRecognitionAPI() as any;
+    recognition.lang =
+      translateLang === "hi" || translateLang === "hinglish"
+        ? "hi-IN"
+        : translateLang === "gu"
+          ? "gu-IN"
+          : "en-US";
+    recognition.interimResults = false;
+    recognition.onresult = (event: any) => {
+      const transcript = event.results[0]?.[0]?.transcript || "";
+      setTranslateInput(transcript);
+      setRecording(false);
+    };
+    recognition.onerror = () => {
+      setRecording(false);
+      toast.error("Microphone error. Try again.");
+    };
+    recognition.onend = () => setRecording(false);
+    recognitionRef.current = recognition;
+    recognition.start();
+    setRecording(true);
+  };
+
   return (
-    <div
+    <motion.div
       className="min-h-screen flex flex-col items-center justify-center p-4 relative overflow-hidden"
       style={{
         background:
           "linear-gradient(135deg, #0a0a0a 0%, #1a0010 35%, #2d0020 60%, #120008 80%, #0a0a0a 100%)",
       }}
+      initial={{ scale: 1.15, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      transition={{ duration: 1.4, ease: "easeOut" }}
     >
       {/* Pink glow orbs */}
       <div
@@ -157,7 +247,7 @@ export default function Auth({ onLogin }: AuthProps) {
         className="mb-8 text-center"
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.6 }}
+        transition={{ duration: 0.6, delay: 0.4 }}
       >
         <img
           src="/assets/uploads/Reckon-Messenger-Log-1.png"
@@ -185,7 +275,7 @@ export default function Auth({ onLogin }: AuthProps) {
         }}
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
-        transition={{ duration: 0.4, delay: 0.1 }}
+        transition={{ duration: 0.4, delay: 0.5 }}
       >
         {/* Tabs */}
         <div
@@ -376,7 +466,7 @@ export default function Auth({ onLogin }: AuthProps) {
                     style={{ color: "rgba(255,0,80,0.6)" }}
                   />
                   <Input
-                    data-ocid="auth.email_input"
+                    data-ocid="auth.reg_email_input"
                     type="email"
                     placeholder="email@example.com"
                     value={regEmail}
@@ -501,7 +591,167 @@ export default function Auth({ onLogin }: AuthProps) {
         </AnimatePresence>
       </motion.div>
 
+      {/* WhatsApp Support Button - fixed bottom right */}
+      <a
+        href="https://wa.me/918511525411"
+        target="_blank"
+        rel="noopener noreferrer"
+        data-ocid="auth.whatsapp_button"
+        className="fixed bottom-6 right-6 w-14 h-14 rounded-full flex items-center justify-center shadow-2xl z-50 transition-transform hover:scale-110 active:scale-95"
+        style={{
+          background: "#25D366",
+          boxShadow: "0 0 20px rgba(37,211,102,0.5)",
+        }}
+        aria-label="WhatsApp Support"
+      >
+        <span className="sr-only">WhatsApp Support</span>
+        <svg
+          viewBox="0 0 24 24"
+          fill="white"
+          className="w-7 h-7"
+          aria-hidden="true"
+        >
+          <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
+        </svg>
+      </a>
+
+      {/* Language Translation Widget - fixed bottom left */}
+      <div className="fixed bottom-6 left-6 z-50">
+        <AnimatePresence>
+          {showTranslate && (
+            <motion.div
+              initial={{ opacity: 0, y: 20, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 20, scale: 0.95 }}
+              transition={{ duration: 0.2 }}
+              className="mb-3 w-72 rounded-2xl p-4 shadow-2xl"
+              style={{
+                background: "rgba(10,0,6,0.92)",
+                border: "1px solid rgba(255,0,100,0.35)",
+                backdropFilter: "blur(20px)",
+                boxShadow: "0 0 30px rgba(255,0,100,0.2)",
+              }}
+            >
+              <p
+                className="text-xs font-semibold mb-2"
+                style={{ color: "rgba(255,150,180,0.9)" }}
+              >
+                🌐 Translate to:
+              </p>
+              {/* Language selector */}
+              <div className="flex gap-1 mb-3 flex-wrap">
+                {(Object.keys(LANG_LABELS) as LangCode[]).map((lang) => (
+                  <button
+                    key={lang}
+                    type="button"
+                    onClick={() => setTranslateLang(lang)}
+                    className="px-2 py-1 rounded-lg text-xs font-medium transition-all"
+                    style={
+                      translateLang === lang
+                        ? {
+                            background:
+                              "linear-gradient(135deg, #cc0044, #ff0066)",
+                            color: "white",
+                            boxShadow: "0 0 8px rgba(255,0,100,0.4)",
+                          }
+                        : {
+                            background: "rgba(255,0,100,0.1)",
+                            color: "rgba(255,150,180,0.7)",
+                            border: "1px solid rgba(255,0,100,0.2)",
+                          }
+                    }
+                  >
+                    {LANG_LABELS[lang]}
+                  </button>
+                ))}
+              </div>
+              {/* Input area */}
+              <div className="relative mb-2">
+                <textarea
+                  className="w-full rounded-xl p-3 pr-10 text-sm resize-none outline-none"
+                  style={{
+                    background: "rgba(255,0,60,0.08)",
+                    border: "1px solid rgba(255,0,100,0.25)",
+                    color: "white",
+                    minHeight: "70px",
+                  }}
+                  placeholder="Type text to translate..."
+                  value={translateInput}
+                  onChange={(e) => setTranslateInput(e.target.value)}
+                />
+                <button
+                  type="button"
+                  onClick={toggleMic}
+                  className="absolute right-2 top-2 w-7 h-7 rounded-full flex items-center justify-center transition-all"
+                  style={{
+                    background: recording
+                      ? "rgba(255,0,0,0.7)"
+                      : "rgba(255,0,100,0.2)",
+                    border: "1px solid rgba(255,0,100,0.3)",
+                  }}
+                  title={recording ? "Stop recording" : "Speak to translate"}
+                >
+                  {recording ? (
+                    <MicOff size={13} style={{ color: "white" }} />
+                  ) : (
+                    <Mic size={13} style={{ color: "rgba(255,150,180,0.8)" }} />
+                  )}
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={handleTranslate}
+                disabled={translating || !translateInput.trim()}
+                className="w-full py-2 rounded-xl text-xs font-semibold transition-all mb-2"
+                style={{
+                  background: translating
+                    ? "rgba(255,0,100,0.3)"
+                    : "linear-gradient(135deg, #cc0044, #ff0066)",
+                  color: "white",
+                  opacity: !translateInput.trim() ? 0.5 : 1,
+                }}
+              >
+                {translating ? "Translating..." : "Translate"}
+              </button>
+              {translateResult && (
+                <div
+                  className="rounded-xl p-3 text-xs"
+                  style={{
+                    background: "rgba(255,0,100,0.06)",
+                    border: "1px solid rgba(255,0,100,0.15)",
+                    color: "rgba(255,220,230,0.9)",
+                  }}
+                >
+                  {translateResult}
+                </div>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Toggle button */}
+        <button
+          type="button"
+          data-ocid="auth.translate_toggle"
+          onClick={() => setShowTranslate((p) => !p)}
+          className="w-14 h-14 rounded-full flex items-center justify-center shadow-2xl transition-transform hover:scale-110 active:scale-95"
+          style={{
+            background: showTranslate
+              ? "linear-gradient(135deg, #cc0044, #ff0066)"
+              : "rgba(20,0,10,0.9)",
+            border: "2px solid rgba(255,0,100,0.5)",
+            boxShadow: "0 0 20px rgba(255,0,100,0.3)",
+          }}
+          aria-label="Language Translation"
+        >
+          <Globe
+            size={22}
+            style={{ color: showTranslate ? "white" : "rgba(255,100,150,0.9)" }}
+          />
+        </button>
+      </div>
+
       <Toaster position="top-center" richColors />
-    </div>
+    </motion.div>
   );
 }

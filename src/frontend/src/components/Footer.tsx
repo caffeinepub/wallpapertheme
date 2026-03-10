@@ -17,11 +17,9 @@ export default function Footer() {
     return () => clearTimeout(t);
   }, [displayText]);
 
-  const year = new Date().getFullYear();
-
   return (
     <footer
-      className="flex-shrink-0 flex items-center justify-between px-6 py-1.5 border-t border-border/30 relative overflow-hidden"
+      className="flex-shrink-0 flex items-center justify-center px-6 py-1.5 border-t border-border/30 relative overflow-hidden"
       style={{
         background: "oklch(0.07 0.015 270)",
         minHeight: "36px",
@@ -57,17 +55,6 @@ export default function Footer() {
           <span style={{ color: "rgba(255,255,255,0.7)" }}>|</span>
         </span>
         <span className="pulse-heart text-base">❤️</span>
-      </div>
-
-      <div className="relative z-10">
-        <a
-          href={`https://caffeine.ai?utm_source=caffeine-footer&utm_medium=referral&utm_content=${encodeURIComponent(window.location.hostname)}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-[10px] text-muted-foreground/50 hover:text-muted-foreground transition-colors"
-        >
-          © {year} Built with caffeine.ai
-        </a>
       </div>
     </footer>
   );
