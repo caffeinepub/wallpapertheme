@@ -1,982 +1,437 @@
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Toaster } from "@/components/ui/sonner";
-import {
-  Download,
-  Heart,
-  HelpCircle,
-  Home,
-  ImageIcon,
-  MessageCircle,
-  Phone,
-  Search,
-  X,
-} from "lucide-react";
-import { AnimatePresence, motion } from "motion/react";
-import { useCallback, useMemo, useState } from "react";
-import { toast } from "sonner";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
+import Auth from "./components/Auth";
+import ChatPanel from "./components/ChatPanel";
+import Footer from "./components/Footer";
+import GroupModal from "./components/GroupModal";
+import OnlineUsers from "./components/OnlineUsers";
+import Sidebar from "./components/Sidebar";
+import SupportModal from "./components/SupportModal";
+import VideoCall, {
+  type VideoCallContextMethods,
+} from "./components/VideoCall";
+import type { ActiveUser, Conversation, Message, User } from "./types";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
-type Page = "home" | "search" | "favorites" | "help";
-
-interface Wallpaper {
-  id: string;
-  title: string;
-  category: string;
-  url: string;
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+export function genId(): string {
+  return `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 }
 
-// ─── Data ────────────────────────────────────────────────────────────────────
-const CATEGORIES = [
-  { id: "nature", label: "🌿 Nature", query: "nature" },
-  { id: "city", label: "🌆 City", query: "city" },
-  { id: "abstract", label: "🎨 Abstract", query: "abstract" },
-  { id: "space", label: "🚀 Space", query: "space" },
-  { id: "animals", label: "🦁 Animals", query: "animals" },
-  { id: "dark", label: "🌑 Dark", query: "dark" },
-  { id: "anime", label: "✨ Anime", query: "anime" },
-  { id: "cars", label: "🏎️ Cars", query: "cars" },
-  { id: "sports", label: "⚽ Sports", query: "sports" },
-  { id: "food", label: "🍕 Food", query: "food" },
-  { id: "minimal", label: "◾ Minimal", query: "minimal" },
-  { id: "architecture", label: "🏛️ Architecture", query: "architecture" },
-  { id: "beach", label: "🏖️ Beach", query: "beach" },
-  { id: "mountains", label: "🏔️ Mountains", query: "mountains" },
-  { id: "flowers", label: "🌸 Flowers", query: "flowers" },
-  { id: "gaming", label: "🎮 Gaming", query: "gaming" },
-];
-
-const WALLPAPER_TITLES: Record<string, string[]> = {
-  nature: [
-    "Forest Mist",
-    "Golden Hour",
-    "Rainy Canopy",
-    "Wild Meadow",
-    "Creek Flow",
-    "Autumn Blaze",
-    "Morning Dew",
-    "Pine Ridge",
-    "Mossy Stones",
-    "Sunlit Fern",
-    "River Bend",
-    "Jungle Veil",
-  ],
-  city: [
-    "Neon Skyline",
-    "Rain Streets",
-    "Rooftop View",
-    "Night Bridge",
-    "Urban Grid",
-    "Metro Rush",
-    "Glass Tower",
-    "Old Quarter",
-    "Harbor Lights",
-    "Street Fog",
-    "Dawn Traffic",
-    "Market Alley",
-  ],
-  abstract: [
-    "Liquid Flow",
-    "Fractal Dream",
-    "Neon Splash",
-    "Crystal Prism",
-    "Paint Storm",
-    "Warp Field",
-    "Color Drift",
-    "Smoke Art",
-    "Blob World",
-    "Ink Drop",
-    "Polygon Sky",
-    "Geo Burst",
-  ],
-  space: [
-    "Nebula Burst",
-    "Milky Way",
-    "Black Hole",
-    "Star Nursery",
-    "Cosmic Dust",
-    "Aurora Belt",
-    "Lunar Surface",
-    "Saturn Ring",
-    "Galaxy Spin",
-    "Comet Trail",
-    "Red Giant",
-    "Deep Void",
-  ],
-  animals: [
-    "Lion Pride",
-    "Wolf Moon",
-    "Eagle Soar",
-    "Tiger Stripes",
-    "Elephant Walk",
-    "Whale Song",
-    "Fox Den",
-    "Panda Peace",
-    "Cheetah Run",
-    "Owl Eyes",
-    "Bear Cub",
-    "Dolphin Leap",
-  ],
-  dark: [
-    "Shadow Realm",
-    "Dark Forest",
-    "Black Lotus",
-    "Midnight City",
-    "Eclipse",
-    "Void Gate",
-    "Raven Wing",
-    "Storm Crow",
-    "Dark Matter",
-    "Obsidian",
-    "Night Bloom",
-    "Abyss",
-  ],
-  anime: [
-    "Sakura Rain",
-    "Cyber Tokyo",
-    "Spirit Fox",
-    "Dragon Shrine",
-    "School Dusk",
-    "Mech Pilot",
-    "Katana Flash",
-    "Ocean Spirit",
-    "Sky Castle",
-    "Demon Hunt",
-    "Ninja Storm",
-    "Maid Café",
-  ],
-  cars: [
-    "Neon Drift",
-    "Track Beast",
-    "Classic Chrome",
-    "Midnight Run",
-    "Supercar Red",
-    "Burnout King",
-    "Rally Mud",
-    "Lambo Gold",
-    "GT Shadow",
-    "Muscle Car",
-    "Formula One",
-    "Retro Ride",
-  ],
-  sports: [
-    "Stadium Roar",
-    "Free Kick",
-    "Slam Dunk",
-    "Podium Finish",
-    "Icy Rink",
-    "Tennis Ace",
-    "Sprint Start",
-    "Wave Surf",
-    "Mountain Bike",
-    "Boxing Ring",
-    "Home Run",
-    "Penalty Kick",
-  ],
-  food: [
-    "Pizza Night",
-    "Sushi Roll",
-    "Burger Stack",
-    "Pasta Feast",
-    "Taco Tuesday",
-    "Ramen Bowl",
-    "Cake Slice",
-    "Coffee Art",
-    "Avocado Toast",
-    "Donut Wall",
-    "Steak Night",
-    "Fruit Bowl",
-  ],
-  minimal: [
-    "White Space",
-    "Mono Line",
-    "Sand Dune",
-    "Fog Layer",
-    "Clean Desk",
-    "Paper Fold",
-    "One Object",
-    "Flat Color",
-    "Shadow Play",
-    "Negative Space",
-    "Thin Grid",
-    "Zen Stone",
-  ],
-  architecture: [
-    "Glass Facade",
-    "Brutalist Block",
-    "Arc de Tri",
-    "Steel Spine",
-    "Arch Bridge",
-    "Dome Light",
-    "Stair Spiral",
-    "Old Palace",
-    "Cathedral",
-    "Skybridge",
-    "Concrete Art",
-    "Timber Frame",
-  ],
-  beach: [
-    "Sunset Shore",
-    "Palm Wave",
-    "Tide Pool",
-    "Coral Reef",
-    "Driftwood",
-    "Shell Walk",
-    "Blue Lagoon",
-    "Cliff Cove",
-    "Wave Crash",
-    "Bonfire Dusk",
-    "Sand Castle",
-    "Hammock View",
-  ],
-  mountains: [
-    "Peak Frost",
-    "Alpine Glow",
-    "Valley Mist",
-    "Rock Face",
-    "Summit Cloud",
-    "Snow Ridge",
-    "Glacier Lake",
-    "Pine Peak",
-    "Dawn Summit",
-    "Lava Field",
-    "Storm Pass",
-    "Eagle Nest",
-  ],
-  flowers: [
-    "Cherry Bloom",
-    "Rose Garden",
-    "Lavender Field",
-    "Sunflower Sky",
-    "Poppy Wave",
-    "Lily Pond",
-    "Orchid Mist",
-    "Daisy Chain",
-    "Blossom Rain",
-    "Peony Crown",
-    "Wisteria",
-    "Tulip Row",
-  ],
-  gaming: [
-    "Pixel Quest",
-    "Neon Arena",
-    "Boss Battle",
-    "Level Up",
-    "Dark Dungeon",
-    "Cyber Clash",
-    "Retro Arcade",
-    "Space Raid",
-    "Moba Map",
-    "Fantasy RPG",
-    "Racing Sim",
-    "Zombie Run",
-  ],
-};
-
-function buildWallpapers(): Wallpaper[] {
-  const all: Wallpaper[] = [];
-  let sigBase = 1;
-  for (const cat of CATEGORIES) {
-    const titles = WALLPAPER_TITLES[cat.id] ?? [];
-    for (let i = 0; i < 12; i++) {
-      all.push({
-        id: `${cat.id}-${i}`,
-        title: titles[i] ?? `${cat.label} ${i + 1}`,
-        category: cat.id,
-        url: `https://source.unsplash.com/400x700/?${cat.query}&sig=${sigBase + i}`,
-      });
-    }
-    sigBase += 12;
+export function loadFromStorage<T>(key: string, fallback: T): T {
+  try {
+    const v = localStorage.getItem(key);
+    return v ? (JSON.parse(v) as T) : fallback;
+  } catch {
+    return fallback;
   }
-  return all;
 }
 
-const ALL_WALLPAPERS = buildWallpapers();
+export function saveToStorage(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {}
+}
 
-const FAQ = [
+export function getInitials(name: string): string {
+  return name
+    .split(" ")
+    .map((p) => p[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+}
+
+const AVATAR_COLORS = [
+  "oklch(0.55 0.22 300)",
+  "oklch(0.55 0.22 200)",
+  "oklch(0.55 0.22 150)",
+  "oklch(0.55 0.22 60)",
+  "oklch(0.55 0.22 350)",
+  "oklch(0.55 0.22 240)",
+  "oklch(0.55 0.22 30)",
+  "oklch(0.55 0.22 120)",
+];
+
+export function getAvatarColor(id: string): string {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) {
+    hash = (hash * 31 + id.charCodeAt(i)) & 0xffffffff;
+  }
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+}
+
+export function formatTime(ts: number): string {
+  return new Date(ts).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export function formatConvTime(ts: number): string {
+  const now = Date.now();
+  const diff = now - ts;
+  if (diff < 60000) return "now";
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h`;
+  return new Date(ts).toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+// ─── Demo Data ──────────────────────────────────────────────────────────────────
+const DEMO_USERS: User[] = [
   {
-    id: "faq-1",
-    q: "How do I set a wallpaper on Android?",
-    a: "Tap on any wallpaper to open it fullscreen, then tap 'Set Wallpaper'. Long press the image and select 'Set as Wallpaper' from the menu.",
+    id: "demo_alice",
+    name: "Alice Sharma",
+    email: "alice@demo.com",
+    phone: "+91 9876543210",
+    password: "demo123",
+    city: "Mumbai",
+    createdAt: Date.now() - 86400000,
   },
   {
-    id: "faq-2",
-    q: "How do I save a wallpaper to my phone?",
-    a: "Open the wallpaper fullscreen and tap the Download button. The image will open in a new tab — long press it and choose 'Save Image'.",
+    id: "demo_bob",
+    name: "Bob Patel",
+    email: "bob@demo.com",
+    phone: "+91 9876543211",
+    password: "demo123",
+    city: "Delhi",
+    createdAt: Date.now() - 86400000,
   },
   {
-    id: "faq-3",
-    q: "How do I add a wallpaper to my Favorites?",
-    a: "Tap the heart icon on any wallpaper card to add it to your Favorites. Access all saved wallpapers from the Favorites tab.",
+    id: "demo_carol",
+    name: "Carol Nair",
+    email: "carol@demo.com",
+    phone: "+91 9876543212",
+    password: "demo123",
+    city: "Bangalore",
+    createdAt: Date.now() - 86400000,
   },
   {
-    id: "faq-4",
-    q: "Why won't the wallpaper load?",
-    a: "Wallpapers require an internet connection. Check your connection, refresh the page, or try again later.",
+    id: "demo_david",
+    name: "David Mehta",
+    email: "david@demo.com",
+    phone: "+91 9876543213",
+    password: "demo123",
+    city: "Pune",
+    createdAt: Date.now() - 86400000,
   },
   {
-    id: "faq-5",
-    q: "Can I use these wallpapers for free?",
-    a: "Yes! All wallpapers are sourced from Unsplash and are free for personal use. Check Unsplash's license for commercial use.",
+    id: "demo_eva",
+    name: "Eva Singh",
+    email: "eva@demo.com",
+    phone: "+91 9876543214",
+    password: "demo123",
+    city: "Hyderabad",
+    createdAt: Date.now() - 86400000,
   },
 ];
 
-// ─── Wallpaper Card ──────────────────────────────────────────────────────────
-interface WallpaperCardProps {
-  wallpaper: Wallpaper;
-  index: number;
-  isFav: boolean;
-  onToggleFav: (id: string) => void;
-  onOpen: (w: Wallpaper) => void;
-}
-
-function WallpaperCard({
-  wallpaper,
-  index,
-  isFav,
-  onToggleFav,
-  onOpen,
-}: WallpaperCardProps) {
-  const [imgLoaded, setImgLoaded] = useState(false);
-
-  return (
-    <motion.div
-      data-ocid={`wallpaper.item.${index}`}
-      className="relative group cursor-pointer rounded-xl overflow-hidden"
-      style={{ aspectRatio: "9/16" }}
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3, delay: index * 0.03 }}
-      onClick={() => onOpen(wallpaper)}
-      whileHover={{ scale: 1.02 }}
-      whileTap={{ scale: 0.98 }}
-    >
-      {!imgLoaded && (
-        <div className="absolute inset-0 bg-muted animate-pulse rounded-xl" />
-      )}
-      <img
-        src={wallpaper.url}
-        alt={wallpaper.title}
-        className={`w-full h-full object-cover transition-opacity duration-300 ${imgLoaded ? "opacity-100" : "opacity-0"}`}
-        onLoad={() => setImgLoaded(true)}
-        loading="lazy"
-      />
-      <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200" />
-      <div className="absolute bottom-0 left-0 right-0 p-2 translate-y-full group-hover:translate-y-0 transition-transform duration-200">
-        <p className="text-white text-xs font-medium truncate">
-          {wallpaper.title}
-        </p>
-      </div>
-      <button
-        type="button"
-        className="absolute top-2 right-2 p-1.5 rounded-full glass-card opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-10"
-        onClick={(e) => {
-          e.stopPropagation();
-          onToggleFav(wallpaper.id);
-        }}
-        aria-label={isFav ? "Remove from favorites" : "Add to favorites"}
-      >
-        <Heart
-          size={14}
-          className={isFav ? "fill-red-500 text-red-500" : "text-white"}
-        />
-      </button>
-    </motion.div>
-  );
-}
-
-// ─── Wallpaper Modal ─────────────────────────────────────────────────────────
-interface WallpaperModalProps {
-  wallpaper: Wallpaper | null;
-  isFav: boolean;
-  onToggleFav: (id: string) => void;
-  onClose: () => void;
-}
-
-function WallpaperModal({
-  wallpaper,
-  isFav,
-  onToggleFav,
-  onClose,
-}: WallpaperModalProps) {
-  if (!wallpaper) return null;
-
-  const handleSetWallpaper = () => {
-    toast("📱 How to Set Wallpaper", {
-      description: "Long press the image and tap 'Set as Wallpaper'",
-      duration: 4000,
-    });
-  };
-
-  const handleDownload = () => {
-    window.open(wallpaper.url.replace("400x700", "1080x1920"), "_blank");
-  };
-
-  return (
-    <motion.div
-      data-ocid="wallpaper.modal"
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-    >
-      <button
-        type="button"
-        className="absolute inset-0 bg-black/90 backdrop-blur-sm w-full h-full cursor-default"
-        onClick={onClose}
-        aria-label="Close modal"
-      />
-      <motion.div
-        className="relative z-10 w-full max-w-sm"
-        initial={{ scale: 0.9, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
-        exit={{ scale: 0.9, opacity: 0 }}
-        transition={{ type: "spring", damping: 25, stiffness: 300 }}
-      >
-        <div
-          className="relative rounded-2xl overflow-hidden"
-          style={{ aspectRatio: "9/16" }}
-        >
-          <img
-            src={wallpaper.url.replace("400x700", "800x1400")}
-            alt={wallpaper.title}
-            className="w-full h-full object-cover"
-          />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/30" />
-
-          {/* Top controls */}
-          <div className="absolute top-4 left-4 right-4 flex justify-between items-center">
-            <button
-              type="button"
-              data-ocid="wallpaper.close_button"
-              className="p-2 rounded-full glass-card"
-              onClick={onClose}
-            >
-              <X size={18} className="text-white" />
-            </button>
-            <button
-              type="button"
-              className="p-2 rounded-full glass-card"
-              onClick={() => onToggleFav(wallpaper.id)}
-              aria-label={isFav ? "Remove from favorites" : "Add to favorites"}
-            >
-              <Heart
-                size={18}
-                className={isFav ? "fill-red-500 text-red-500" : "text-white"}
-              />
-            </button>
-          </div>
-
-          {/* Bottom controls */}
-          <div className="absolute bottom-0 left-0 right-0 p-4 space-y-3">
-            <p className="text-white font-display font-semibold text-lg">
-              {wallpaper.title}
-            </p>
-            <div className="flex gap-3">
-              <Button
-                data-ocid="wallpaper.download_button"
-                className="flex-1 bg-white/20 hover:bg-white/30 text-white border-0 backdrop-blur-sm"
-                onClick={handleDownload}
-              >
-                <Download size={16} className="mr-2" />
-                Download
-              </Button>
-              <Button
-                className="flex-1 text-white border-0"
-                style={{
-                  background:
-                    "linear-gradient(135deg, oklch(0.65 0.28 320), oklch(0.58 0.24 290))",
-                }}
-                onClick={handleSetWallpaper}
-              >
-                <ImageIcon size={16} className="mr-2" />
-                Set Wallpaper
-              </Button>
-            </div>
-          </div>
-        </div>
-      </motion.div>
-    </motion.div>
-  );
-}
-
-// ─── Home Page ───────────────────────────────────────────────────────────────
-interface HomePageProps {
-  favorites: Set<string>;
-  onToggleFav: (id: string) => void;
-}
-
-function HomePage({ favorites, onToggleFav }: HomePageProps) {
-  const [activeCategory, setActiveCategory] = useState("nature");
-  const [selectedWallpaper, setSelectedWallpaper] = useState<Wallpaper | null>(
-    null,
-  );
-
-  const categoryWallpapers = useMemo(
-    () => ALL_WALLPAPERS.filter((w) => w.category === activeCategory),
-    [activeCategory],
-  );
-
-  return (
-    <div className="flex flex-col h-full">
-      <div className="flex-shrink-0 px-4 pb-3">
-        <div
-          className="flex gap-2 overflow-x-auto category-scroll pb-1"
-          style={{ scrollbarWidth: "none" }}
-        >
-          {CATEGORIES.map((cat, idx) => (
-            <button
-              type="button"
-              key={cat.id}
-              data-ocid={`category.tab.${idx + 1}`}
-              onClick={() => setActiveCategory(cat.id)}
-              className={`flex-shrink-0 px-4 py-2 rounded-full text-sm font-medium transition-all duration-200 ${
-                activeCategory === cat.id
-                  ? "text-white shadow-glow-sm"
-                  : "bg-secondary text-muted-foreground hover:text-foreground"
-              }`}
-              style={
-                activeCategory === cat.id
-                  ? {
-                      background:
-                        "linear-gradient(135deg, oklch(0.65 0.28 320), oklch(0.58 0.24 290))",
-                    }
-                  : {}
-              }
-            >
-              {cat.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-4 pb-4">
-        <div className="wallpaper-grid">
-          {categoryWallpapers.map((w, idx) => (
-            <WallpaperCard
-              key={w.id}
-              wallpaper={w}
-              index={idx + 1}
-              isFav={favorites.has(w.id)}
-              onToggleFav={onToggleFav}
-              onOpen={setSelectedWallpaper}
-            />
-          ))}
-        </div>
-      </div>
-
-      <AnimatePresence>
-        {selectedWallpaper && (
-          <WallpaperModal
-            wallpaper={selectedWallpaper}
-            isFav={favorites.has(selectedWallpaper.id)}
-            onToggleFav={onToggleFav}
-            onClose={() => setSelectedWallpaper(null)}
-          />
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
-
-// ─── Search Page ─────────────────────────────────────────────────────────────
-interface SearchPageProps {
-  favorites: Set<string>;
-  onToggleFav: (id: string) => void;
-}
-
-function SearchPage({ favorites, onToggleFav }: SearchPageProps) {
-  const [query, setQuery] = useState("");
-  const [selectedWallpaper, setSelectedWallpaper] = useState<Wallpaper | null>(
-    null,
-  );
-
-  const results = useMemo(() => {
-    if (!query.trim()) return ALL_WALLPAPERS.slice(0, 24);
-    const q = query.toLowerCase();
-    return ALL_WALLPAPERS.filter(
-      (w) =>
-        w.title.toLowerCase().includes(q) ||
-        w.category.toLowerCase().includes(q),
+function initDemoData(): void {
+  if (localStorage.getItem("reckon_demo_init")) return;
+  const users: User[] = loadFromStorage("reckon_users", []);
+  const demoIds = new Set(DEMO_USERS.map((u) => u.id));
+  const filtered = users.filter((u) => !demoIds.has(u.id));
+  saveToStorage("reckon_users", [...filtered, ...DEMO_USERS]);
+  for (const u of DEMO_USERS) {
+    localStorage.setItem(
+      `reckon_active_${u.id}`,
+      JSON.stringify({
+        name: u.name,
+        city: u.city,
+        lastSeen: Date.now() - Math.floor(Math.random() * 4 * 60 * 1000),
+      }),
     );
-  }, [query]);
-
-  return (
-    <div className="flex flex-col h-full">
-      <div className="flex-shrink-0 px-4 pb-4">
-        <div className="relative">
-          <Search
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
-            size={16}
-          />
-          <Input
-            data-ocid="search.input"
-            placeholder="Search wallpapers, categories..."
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            className="pl-9 bg-secondary border-border text-foreground placeholder:text-muted-foreground"
-          />
-        </div>
-        {query && (
-          <p className="text-xs text-muted-foreground mt-2">
-            {results.length} result{results.length !== 1 ? "s" : ""} for &quot;
-            {query}&quot;
-          </p>
-        )}
-      </div>
-      <div className="flex-1 overflow-y-auto px-4 pb-4">
-        {results.length === 0 ? (
-          <div data-ocid="search.empty_state" className="text-center py-16">
-            <p className="text-muted-foreground text-lg">No wallpapers found</p>
-            <p className="text-muted-foreground text-sm mt-1">
-              Try a different search term
-            </p>
-          </div>
-        ) : (
-          <div className="wallpaper-grid">
-            {results.map((w, idx) => (
-              <WallpaperCard
-                key={w.id}
-                wallpaper={w}
-                index={idx + 1}
-                isFav={favorites.has(w.id)}
-                onToggleFav={onToggleFav}
-                onOpen={setSelectedWallpaper}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-      <AnimatePresence>
-        {selectedWallpaper && (
-          <WallpaperModal
-            wallpaper={selectedWallpaper}
-            isFav={favorites.has(selectedWallpaper.id)}
-            onToggleFav={onToggleFav}
-            onClose={() => setSelectedWallpaper(null)}
-          />
-        )}
-      </AnimatePresence>
-    </div>
-  );
+  }
+  localStorage.setItem("reckon_demo_init", "1");
 }
 
-// ─── Favorites Page ───────────────────────────────────────────────────────────
-interface FavoritesPageProps {
-  favorites: Set<string>;
-  onToggleFav: (id: string) => void;
+function getOnlineUsers(): ActiveUser[] {
+  const result: ActiveUser[] = [];
+  const fiveMin = Date.now() - 5 * 60 * 1000;
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key?.startsWith("reckon_active_")) {
+      try {
+        const data = JSON.parse(localStorage.getItem(key) ?? "{}");
+        if (data.lastSeen > fiveMin) {
+          result.push({ id: key.replace("reckon_active_", ""), ...data });
+        }
+      } catch {}
+    }
+  }
+  return result.sort((a, b) => b.lastSeen - a.lastSeen);
 }
 
-function FavoritesPage({ favorites, onToggleFav }: FavoritesPageProps) {
-  const [selectedWallpaper, setSelectedWallpaper] = useState<Wallpaper | null>(
-    null,
-  );
-
-  const favWallpapers = useMemo(
-    () => ALL_WALLPAPERS.filter((w) => favorites.has(w.id)),
-    [favorites],
-  );
-
-  return (
-    <div className="flex flex-col h-full">
-      <div className="flex-shrink-0 px-4 pb-3">
-        <p className="text-sm text-muted-foreground">
-          {favWallpapers.length} saved wallpaper
-          {favWallpapers.length !== 1 ? "s" : ""}
-        </p>
-      </div>
-      <div className="flex-1 overflow-y-auto px-4 pb-4">
-        {favWallpapers.length === 0 ? (
-          <motion.div
-            data-ocid="favorites.empty_state"
-            className="flex flex-col items-center justify-center h-full text-center py-16"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-          >
-            <div
-              className="w-20 h-20 rounded-full flex items-center justify-center mb-4"
-              style={{
-                background:
-                  "linear-gradient(135deg, oklch(0.65 0.28 320 / 0.2), oklch(0.58 0.24 290 / 0.2))",
-                border: "1px solid oklch(0.65 0.28 320 / 0.3)",
-              }}
-            >
-              <Heart size={32} className="text-primary" />
-            </div>
-            <p className="text-foreground font-semibold text-lg">
-              No favorites yet
-            </p>
-            <p className="text-muted-foreground text-sm mt-1 max-w-xs">
-              Tap the heart icon on any wallpaper to save it here
-            </p>
-          </motion.div>
-        ) : (
-          <div className="wallpaper-grid">
-            {favWallpapers.map((w, idx) => (
-              <WallpaperCard
-                key={w.id}
-                wallpaper={w}
-                index={idx + 1}
-                isFav={true}
-                onToggleFav={onToggleFav}
-                onOpen={setSelectedWallpaper}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-      <AnimatePresence>
-        {selectedWallpaper && (
-          <WallpaperModal
-            wallpaper={selectedWallpaper}
-            isFav={favorites.has(selectedWallpaper.id)}
-            onToggleFav={onToggleFav}
-            onClose={() => setSelectedWallpaper(null)}
-          />
-        )}
-      </AnimatePresence>
-    </div>
-  );
+// ─── Context ──────────────────────────────────────────────────────────────────
+interface ReckonContextType {
+  currentUser: User;
+  conversations: Conversation[];
+  messages: Message[];
+  selectedConvId: string | null;
+  setSelectedConvId: (id: string | null) => void;
+  addMessage: (msg: Message) => void;
+  addConversation: (conv: Conversation) => void;
+  allUsers: User[];
+  onlineUsers: ActiveUser[];
+  logout: () => void;
+  refreshData: () => void;
+  typingInConvId: string | null;
+  setTypingInConvId: (id: string | null) => void;
+  mobileView: "sidebar" | "chat";
+  setMobileView: (v: "sidebar" | "chat") => void;
+  initiateCall: (userId: string) => void;
+  endCall: () => void;
+  activeCallUserId: string | null;
+  incomingCallFrom: string | null;
+  acceptCall: () => void;
+  declineCall: () => void;
 }
 
-// ─── Help Page ────────────────────────────────────────────────────────────────
-function HelpPage() {
-  return (
-    <div className="flex-1 overflow-y-auto px-4 pb-8">
-      <motion.div
-        className="glass-card rounded-2xl p-6 mb-6 text-center"
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-      >
-        <div
-          className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"
-          style={{ background: "#25D366" }}
-        >
-          <MessageCircle size={32} className="text-white" />
-        </div>
-        <h2 className="font-display font-bold text-xl text-foreground mb-1">
-          Need Help?
-        </h2>
-        <p className="text-muted-foreground text-sm mb-4">
-          Chat with us directly on WhatsApp for instant support
-        </p>
-        <div className="flex items-center justify-center gap-2 mb-4 text-muted-foreground">
-          <Phone size={14} />
-          <span className="text-sm font-medium">+91 8511525411</span>
-        </div>
-        <a
-          href="https://wa.me/918511525411"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center justify-center gap-2 w-full py-3 rounded-xl text-white font-semibold text-base transition-transform active:scale-95"
-          style={{ background: "#25D366" }}
-        >
-          <MessageCircle size={20} />
-          Chat on WhatsApp
-        </a>
-      </motion.div>
+export const ReckonContext = createContext<ReckonContextType | null>(null);
 
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.1 }}
-      >
-        <h3 className="font-display font-bold text-lg text-foreground mb-3">
-          Frequently Asked Questions
-        </h3>
-        <Accordion type="single" collapsible className="space-y-2">
-          {FAQ.map((item) => (
-            <AccordionItem
-              key={item.id}
-              value={item.id}
-              className="glass-card rounded-xl border-0 px-4"
-            >
-              <AccordionTrigger className="text-sm font-medium text-foreground hover:no-underline">
-                {item.q}
-              </AccordionTrigger>
-              <AccordionContent className="text-sm text-muted-foreground leading-relaxed">
-                {item.a}
-              </AccordionContent>
-            </AccordionItem>
-          ))}
-        </Accordion>
-      </motion.div>
-    </div>
-  );
+export function useReckon(): ReckonContextType {
+  const ctx = useContext(ReckonContext);
+  if (!ctx) throw new Error("useReckon must be within ReckonContext.Provider");
+  return ctx;
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [page, setPage] = useState<Page>("home");
-  const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  const [currentUser, setCurrentUser] = useState<User | null>(() =>
+    loadFromStorage<User | null>("reckon_current_user", null),
+  );
+  const [conversations, setConversations] = useState<Conversation[]>(() =>
+    loadFromStorage("reckon_conversations", []),
+  );
+  const [messages, setMessages] = useState<Message[]>(() =>
+    loadFromStorage("reckon_messages", []),
+  );
+  const [allUsers, setAllUsers] = useState<User[]>(() =>
+    loadFromStorage("reckon_users", []),
+  );
+  const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
+  const [onlineUsers, setOnlineUsers] = useState<ActiveUser[]>([]);
+  const [typingInConvId, setTypingInConvId] = useState<string | null>(null);
+  const [showSupport, setShowSupport] = useState(false);
+  const [showGroup, setShowGroup] = useState(false);
+  const [mobileView, setMobileView] = useState<"sidebar" | "chat">("sidebar");
+  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const toggleFav = useCallback((id: string) => {
-    setFavorites((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-        toast("Removed from favorites", { duration: 1500 });
-      } else {
-        next.add(id);
-        toast.success("Added to favorites ❤️", { duration: 1500 });
-      }
-      return next;
+  // Video call state — managed by VideoCall component, surfaced here for context
+  const [videoCallMethods, setVideoCallMethods] =
+    useState<VideoCallContextMethods>({
+      initiateCall: () => {},
+      endCall: () => {},
+      activeCallUserId: null,
+      incomingCallFrom: null,
+      acceptCall: () => {},
+      declineCall: () => {},
     });
+
+  useEffect(() => {
+    initDemoData();
+    setAllUsers(loadFromStorage("reckon_users", []));
+    setOnlineUsers(getOnlineUsers());
+    // Detect city for returning users too
+    const stored = loadFromStorage<User | null>("reckon_current_user", null);
+    if (stored) detectCity(stored);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const PAGE_TITLES: Record<Page, string> = {
-    home: "WallpaperTheme",
-    search: "Search",
-    favorites: "Favorites",
-    help: "Help & Support",
+  useEffect(() => {
+    if (!currentUser) return;
+    const updateActive = () => {
+      localStorage.setItem(
+        `reckon_active_${currentUser.id}`,
+        JSON.stringify({
+          name: currentUser.name,
+          city: currentUser.city,
+          lastSeen: Date.now(),
+        }),
+      );
+      setOnlineUsers(getOnlineUsers());
+    };
+    updateActive();
+    heartbeatRef.current = setInterval(updateActive, 30000);
+    return () => {
+      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+    };
+  }, [currentUser]);
+
+  const refreshData = () => {
+    setConversations(loadFromStorage("reckon_conversations", []));
+    setMessages(loadFromStorage("reckon_messages", []));
+    setAllUsers(loadFromStorage("reckon_users", []));
+    setOnlineUsers(getOnlineUsers());
   };
 
-  const NAV_ITEMS: {
-    id: Page;
-    icon: React.ReactNode;
-    label: string;
-    ocid: string;
-  }[] = [
-    {
-      id: "home",
-      icon: <Home size={20} />,
-      label: "Home",
-      ocid: "nav.home.link",
+  const detectCity = async (user: User) => {
+    if (user.city || !navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+      try {
+        const res = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${pos.coords.latitude}&lon=${pos.coords.longitude}`,
+        );
+        const data = await res.json();
+        const city =
+          data.address?.city ||
+          data.address?.town ||
+          data.address?.village ||
+          "";
+        if (city) {
+          const updated = { ...user, city };
+          saveToStorage("reckon_current_user", updated);
+          setCurrentUser(updated);
+          const users = loadFromStorage<User[]>("reckon_users", []);
+          const idx = users.findIndex((u) => u.id === user.id);
+          if (idx >= 0) {
+            users[idx] = updated;
+            saveToStorage("reckon_users", users);
+          }
+        }
+      } catch {}
+    });
+  };
+
+  const handleLogin = (user: User) => {
+    saveToStorage("reckon_current_user", user);
+    setCurrentUser(user);
+    detectCity(user);
+  };
+
+  const logout = () => {
+    localStorage.removeItem("reckon_current_user");
+    if (currentUser) localStorage.removeItem(`reckon_active_${currentUser.id}`);
+    setCurrentUser(null);
+    setSelectedConvId(null);
+    if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+  };
+
+  const addMessage = (msg: Message) => {
+    setMessages((prev) => {
+      const next = [...prev, msg];
+      saveToStorage("reckon_messages", next);
+      return next;
+    });
+  };
+
+  const addConversation = (conv: Conversation) => {
+    setConversations((prev) => {
+      const next = [...prev, conv];
+      saveToStorage("reckon_conversations", next);
+      return next;
+    });
+  };
+
+  if (!currentUser) {
+    return <Auth onLogin={handleLogin} />;
+  }
+
+  const ctx: ReckonContextType = {
+    currentUser,
+    conversations,
+    messages,
+    selectedConvId,
+    setSelectedConvId: (id) => {
+      setSelectedConvId(id);
+      if (id) setMobileView("chat");
     },
-    {
-      id: "search",
-      icon: <Search size={20} />,
-      label: "Search",
-      ocid: "nav.search.link",
-    },
-    {
-      id: "favorites",
-      icon: <Heart size={20} />,
-      label: "Favorites",
-      ocid: "nav.favorites.link",
-    },
-    {
-      id: "help",
-      icon: <HelpCircle size={20} />,
-      label: "Help",
-      ocid: "nav.help.link",
-    },
-  ];
+    addMessage,
+    addConversation,
+    allUsers,
+    onlineUsers,
+    logout,
+    refreshData,
+    typingInConvId,
+    setTypingInConvId,
+    mobileView,
+    setMobileView,
+    initiateCall: videoCallMethods.initiateCall,
+    endCall: videoCallMethods.endCall,
+    activeCallUserId: videoCallMethods.activeCallUserId,
+    incomingCallFrom: videoCallMethods.incomingCallFrom,
+    acceptCall: videoCallMethods.acceptCall,
+    declineCall: videoCallMethods.declineCall,
+  };
 
   return (
-    <div className="flex flex-col h-screen max-w-md mx-auto relative overflow-hidden">
-      {/* Background atmosphere */}
+    <ReckonContext.Provider value={ctx}>
       <div
-        className="fixed inset-0 pointer-events-none"
+        className="flex flex-col h-screen overflow-hidden"
         style={{
           background:
-            "radial-gradient(ellipse 80% 60% at 50% 0%, oklch(0.25 0.12 285 / 0.4), transparent), radial-gradient(ellipse 60% 40% at 80% 100%, oklch(0.22 0.10 320 / 0.3), transparent)",
+            "radial-gradient(ellipse 80% 60% at 20% 0%, oklch(0.18 0.08 300 / 0.3), transparent), radial-gradient(ellipse 60% 50% at 80% 100%, oklch(0.16 0.06 200 / 0.25), transparent), oklch(0.08 0.015 270)",
         }}
-      />
-
-      {/* Header */}
-      <header className="flex-shrink-0 px-4 pt-10 pb-4 relative z-10">
-        <motion.h1
-          key={page}
-          className="font-display font-bold text-2xl gradient-text"
-          initial={{ opacity: 0, y: -8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.2 }}
-        >
-          {PAGE_TITLES[page]}
-        </motion.h1>
-        {page === "home" && (
-          <p className="text-muted-foreground text-sm mt-0.5">
-            {ALL_WALLPAPERS.length}+ wallpapers · {CATEGORIES.length} categories
-          </p>
-        )}
-      </header>
-
-      {/* Main content */}
-      <main className="flex-1 overflow-hidden relative z-10">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={page}
-            className="h-full flex flex-col"
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -20 }}
-            transition={{ duration: 0.2 }}
-          >
-            {page === "home" && (
-              <HomePage favorites={favorites} onToggleFav={toggleFav} />
-            )}
-            {page === "search" && (
-              <SearchPage favorites={favorites} onToggleFav={toggleFav} />
-            )}
-            {page === "favorites" && (
-              <FavoritesPage favorites={favorites} onToggleFav={toggleFav} />
-            )}
-            {page === "help" && <HelpPage />}
-          </motion.div>
-        </AnimatePresence>
-      </main>
-
-      {/* Footer branding */}
-      <div className="flex-shrink-0 text-center py-1 relative z-10">
-        <p className="text-xs text-muted-foreground">Created by Rahul Parmar</p>
-      </div>
-
-      {/* Bottom navigation */}
-      <nav
-        className="flex-shrink-0 relative z-10 mx-3 mb-3 rounded-2xl glass-card"
-        style={{ background: "oklch(0.16 0.025 285 / 0.95)" }}
       >
-        <div className="flex items-center justify-around py-2">
-          {NAV_ITEMS.map((item) => (
-            <button
-              type="button"
-              key={item.id}
-              data-ocid={item.ocid}
-              onClick={() => setPage(item.id)}
-              className={`flex flex-col items-center gap-1 px-4 py-2 rounded-xl transition-all duration-200 ${
-                page === item.id
-                  ? "text-white"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <div
-                className={`transition-all duration-200 ${page === item.id ? "scale-110" : "scale-100"}`}
-                style={
-                  page === item.id
-                    ? {
-                        filter:
-                          "drop-shadow(0 0 8px oklch(0.65 0.28 320 / 0.8))",
-                        color: "oklch(0.78 0.22 320)",
-                      }
-                    : {}
-                }
-              >
-                {item.icon}
-              </div>
-              <span className="text-xs font-medium">{item.label}</span>
-              {page === item.id && (
-                <motion.div
-                  layoutId="nav-indicator"
-                  className="absolute bottom-2 w-5 h-0.5 rounded-full"
-                  style={{
-                    background:
-                      "linear-gradient(90deg, oklch(0.65 0.28 320), oklch(0.58 0.24 290))",
-                  }}
-                />
-              )}
-            </button>
-          ))}
-        </div>
-      </nav>
+        <div className="flex flex-1 overflow-hidden">
+          {/* Sidebar */}
+          <div
+            className={`${
+              mobileView === "sidebar" ? "flex" : "hidden"
+            } md:flex flex-col w-full md:w-72 lg:w-80 flex-shrink-0 border-r border-border/40`}
+          >
+            <Sidebar onNewGroup={() => setShowGroup(true)} />
+          </div>
 
-      <Toaster position="top-center" richColors />
-    </div>
+          {/* Chat panel */}
+          <div
+            className={`${
+              mobileView === "chat" ? "flex" : "hidden"
+            } md:flex flex-1 flex-col overflow-hidden`}
+          >
+            <ChatPanel />
+          </div>
+
+          {/* Online users - desktop only */}
+          <div className="hidden lg:flex flex-col w-56 xl:w-64 flex-shrink-0 border-l border-border/40">
+            <OnlineUsers />
+          </div>
+        </div>
+
+        <Footer />
+
+        {/* Floating WhatsApp support button — hidden when user is typing */}
+        {typingInConvId === null && (
+          <button
+            type="button"
+            data-ocid="support.open_modal_button"
+            className="fixed bottom-16 right-4 w-12 h-12 rounded-full flex items-center justify-center shadow-lg z-50 transition-transform hover:scale-110 active:scale-95"
+            style={{ background: "#25D366" }}
+            onClick={() => setShowSupport(true)}
+            aria-label="Help & Support"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="white"
+              className="w-6 h-6"
+              aria-hidden="true"
+            >
+              <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
+            </svg>
+          </button>
+        )}
+
+        {showSupport && <SupportModal onClose={() => setShowSupport(false)} />}
+
+        {showGroup && (
+          <GroupModal
+            onClose={() => setShowGroup(false)}
+            onCreated={(conv) => {
+              addConversation(conv);
+              setSelectedConvId(conv.id);
+              setMobileView("chat");
+              setShowGroup(false);
+            }}
+          />
+        )}
+
+        {/* Video Call Overlay — mounted always, manages its own visibility */}
+        <VideoCall onContextReady={setVideoCallMethods} />
+
+        <Toaster position="top-center" richColors />
+      </div>
+    </ReckonContext.Provider>
   );
 }

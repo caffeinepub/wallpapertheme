@@ -1,7 +1,10 @@
 import type { Identity } from "@icp-sdk/core/agent";
 
 // Stub backend — this app is fully client-side with no Motoko canister.
-export type backendInterface = Record<string, never>;
+export type backendInterface = {
+  _initializeAccessControlWithSecret: (token: string) => Promise<void>;
+  [key: string]: unknown;
+};
 export type CreateActorOptions = {
   agentOptions?: { identity?: Identity | Promise<Identity> };
 };
@@ -22,5 +25,7 @@ export function createActor(
   _download: (b: Uint8Array) => Promise<ExternalBlob>,
   _options?: CreateActorOptions,
 ): backendInterface {
-  return {};
+  return {
+    _initializeAccessControlWithSecret: async (_token: string) => {},
+  };
 }
