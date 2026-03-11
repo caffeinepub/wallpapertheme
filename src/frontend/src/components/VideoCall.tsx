@@ -1,4 +1,12 @@
-import { Mic, MicOff, Phone, PhoneOff, Video, VideoOff } from "lucide-react";
+import {
+  LogOut,
+  Mic,
+  MicOff,
+  Phone,
+  PhoneOff,
+  Video,
+  VideoOff,
+} from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import { getAvatarColor, getInitials, useReckon } from "../App";
@@ -31,7 +39,6 @@ function readSignals(callId: string): SignalData[] {
     if (key?.startsWith(`reckon_signal_${callId}`)) {
       try {
         const d = JSON.parse(localStorage.getItem(key) ?? "") as SignalData;
-        // Ignore stale signals older than 60s
         if (Date.now() - d.timestamp < 60000) result.push(d);
         else localStorage.removeItem(key);
       } catch {}
@@ -49,7 +56,6 @@ function clearSignals(callId: string) {
   for (const k of toRemove) localStorage.removeItem(k);
 }
 
-// Scan all signals looking for an incoming offer for a specific user
 function findIncomingOffer(userId: string): SignalData | null {
   const now = Date.now();
   for (let i = 0; i < localStorage.length; i++) {
@@ -105,7 +111,6 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
   const callIdRef = useRef<string | null>(null);
   const callStateRef = useRef<CallState>("idle");
 
-  // Keep ref in sync
   callStateRef.current = callState;
   callIdRef.current = currentCallId;
 
@@ -120,8 +125,7 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
       ? allUsers.find((u) => u.id === activeCallUserId)
       : null;
 
-  // Expose context methods
-  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional - expose updated closures
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional
   useEffect(() => {
     if (onContextReady) {
       onContextReady({
@@ -135,7 +139,6 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
     }
   }, [activeCallUserId, incomingCallFrom, callState]);
 
-  // Poll for incoming calls + signals
   useEffect(() => {
     pollRef.current = setInterval(() => {
       const state = callStateRef.current;
@@ -170,11 +173,10 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
             (s) => s.type === "ice" && s.from !== currentUser.id,
           );
           for (const s of iceSigs) {
-            if (s.candidate) {
+            if (s.candidate)
               pcRef.current
                 ?.addIceCandidate(new RTCIceCandidate(s.candidate))
                 .catch(() => {});
-            }
           }
           setCallState("active");
         } else {
@@ -218,11 +220,10 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
 
   const getMediaStream = async (): Promise<MediaStream | null> => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      return await navigator.mediaDevices.getUserMedia({
         video: true,
         audio: true,
       });
-      return stream;
     } catch (err) {
       if (err instanceof DOMException && err.name === "NotAllowedError") {
         setCallError(
@@ -242,7 +243,6 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
         { urls: "stun:stun1.l.google.com:19302" },
       ],
     });
-
     pc.onicecandidate = (e) => {
       if (e.candidate) {
         writeSignal(callId, {
@@ -255,46 +255,33 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
         });
       }
     };
-
     pc.ontrack = (e) => {
-      if (remoteVideoRef.current && e.streams[0]) {
+      if (remoteVideoRef.current && e.streams[0])
         remoteVideoRef.current.srcObject = e.streams[0];
-      }
     };
-
     pc.onconnectionstatechange = () => {
       if (
         pc.connectionState === "disconnected" ||
         pc.connectionState === "failed"
-      ) {
+      )
         cleanupCall();
-      }
     };
-
     return pc;
   };
 
   const initiateCall = async (userId: string) => {
     if (callState !== "idle") return;
     setCallError(null);
-
     const stream = await getMediaStream();
     if (!stream) return;
-
     localStreamRef.current = stream;
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = stream;
-    }
-
+    if (localVideoRef.current) localVideoRef.current.srcObject = stream;
     const callId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const pc = createPC(callId, userId);
     pcRef.current = pc;
-
     for (const track of stream.getTracks()) pc.addTrack(track, stream);
-
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-
     writeSignal(callId, {
       type: "offer",
       from: currentUser.id,
@@ -303,7 +290,6 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
       offer: pc.localDescription?.toJSON(),
       timestamp: Date.now(),
     });
-
     setCurrentCallId(callId);
     callIdRef.current = callId;
     setActiveCallUserId(userId);
@@ -315,19 +301,13 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
     const fromId = incomingCallFrom;
     if (!callId || !fromId) return;
     setCallError(null);
-
     const stream = await getMediaStream();
     if (!stream) return;
-
     localStreamRef.current = stream;
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = stream;
-    }
-
+    if (localVideoRef.current) localVideoRef.current.srcObject = stream;
     const pc = createPC(callId, fromId);
     pcRef.current = pc;
     for (const track of stream.getTracks()) pc.addTrack(track, stream);
-
     const signals = readSignals(callId);
     const offerSig = signals.find(
       (s) => s.type === "offer" && s.from === fromId,
@@ -337,11 +317,9 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
       cleanupCall();
       return;
     }
-
     await pc.setRemoteDescription(new RTCSessionDescription(offerSig.offer));
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-
     writeSignal(callId, {
       type: "answer",
       from: currentUser.id,
@@ -350,7 +328,6 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
       answer: pc.localDescription?.toJSON(),
       timestamp: Date.now(),
     });
-
     setActiveCallUserId(fromId);
     setCallState("active");
     startDurationTimer();
@@ -396,16 +373,12 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
     localStreamRef.current = null;
     if (localVideoRef.current) localVideoRef.current.srcObject = null;
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
-
     pcRef.current?.close();
     pcRef.current = null;
-
     const callId = callIdRef.current;
     if (callId) setTimeout(() => clearSignals(callId), 2000);
-
     if (durationRef.current) clearInterval(durationRef.current);
     setCallDuration(0);
-
     setCallState("idle");
     setActiveCallUserId(null);
     setIncomingCallFrom(null);
@@ -428,18 +401,16 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
 
   const toggleMute = () => {
     if (localStreamRef.current) {
-      for (const t of localStreamRef.current.getAudioTracks()) {
+      for (const t of localStreamRef.current.getAudioTracks())
         t.enabled = isMuted;
-      }
     }
     setIsMuted((m) => !m);
   };
 
   const toggleCamera = () => {
     if (localStreamRef.current) {
-      for (const t of localStreamRef.current.getVideoTracks()) {
+      for (const t of localStreamRef.current.getVideoTracks())
         t.enabled = isCameraOff;
-      }
     }
     setIsCameraOff((c) => !c);
   };
@@ -488,37 +459,62 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
               </div>
             </div>
 
-            <div>
-              <p className="text-white/60 text-sm mb-1">
+            {/* Name badge with neon glow */}
+            <motion.div
+              className="px-6 py-3 rounded-2xl"
+              style={{
+                background: "oklch(0.1 0.02 270 / 0.85)",
+                border: "1.5px solid oklch(0.65 0.28 150 / 0.7)",
+                boxShadow:
+                  "0 0 18px oklch(0.65 0.28 150 / 0.45), 0 0 40px oklch(0.65 0.28 150 / 0.2)",
+              }}
+              animate={{
+                boxShadow: [
+                  "0 0 18px oklch(0.65 0.28 150 / 0.45), 0 0 40px oklch(0.65 0.28 150 / 0.2)",
+                  "0 0 28px oklch(0.65 0.28 150 / 0.7), 0 0 60px oklch(0.65 0.28 150 / 0.35)",
+                  "0 0 18px oklch(0.65 0.28 150 / 0.45), 0 0 40px oklch(0.65 0.28 150 / 0.2)",
+                ],
+              }}
+              transition={{ duration: 2, repeat: Number.POSITIVE_INFINITY }}
+            >
+              <p className="text-white/60 text-xs mb-0.5 tracking-wider uppercase">
                 Incoming Video Call 📹
               </p>
               <h2 className="text-2xl font-bold text-white">
                 {callerUser?.name ?? "Unknown"}
               </h2>
               {callerUser?.city && (
-                <p className="text-white/50 text-sm mt-1">{callerUser.city}</p>
+                <p className="text-white/50 text-sm mt-1">
+                  📍 {callerUser.city}
+                </p>
               )}
-            </div>
+            </motion.div>
 
             <div className="flex gap-8">
-              <button
-                type="button"
-                data-ocid="videocall.decline_button"
-                className="w-16 h-16 rounded-full flex items-center justify-center transition-transform hover:scale-110 active:scale-95"
-                style={{ background: "oklch(0.5 0.25 25)" }}
-                onClick={declineCall}
-              >
-                <PhoneOff size={24} className="text-white" />
-              </button>
-              <button
-                type="button"
-                data-ocid="videocall.accept_button"
-                className="w-16 h-16 rounded-full flex items-center justify-center transition-transform hover:scale-110 active:scale-95"
-                style={{ background: "oklch(0.55 0.25 150)" }}
-                onClick={acceptCall}
-              >
-                <Phone size={24} className="text-white" />
-              </button>
+              <div className="flex flex-col items-center gap-2">
+                <button
+                  type="button"
+                  data-ocid="videocall.decline_button"
+                  className="w-16 h-16 rounded-full flex items-center justify-center transition-transform hover:scale-110 active:scale-95"
+                  style={{ background: "oklch(0.5 0.25 25)" }}
+                  onClick={declineCall}
+                >
+                  <PhoneOff size={24} className="text-white" />
+                </button>
+                <span className="text-white/60 text-xs">Decline</span>
+              </div>
+              <div className="flex flex-col items-center gap-2">
+                <button
+                  type="button"
+                  data-ocid="videocall.accept_button"
+                  className="w-16 h-16 rounded-full flex items-center justify-center transition-transform hover:scale-110 active:scale-95"
+                  style={{ background: "oklch(0.55 0.25 150)" }}
+                  onClick={acceptCall}
+                >
+                  <Phone size={24} className="text-white" />
+                </button>
+                <span className="text-white/60 text-xs">Accept</span>
+              </div>
             </div>
           </motion.div>
         )}
@@ -545,9 +541,26 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
               </div>
             </div>
 
-            <div>
+            {/* Name badge with neon glow */}
+            <motion.div
+              className="px-6 py-3 rounded-2xl"
+              style={{
+                background: "oklch(0.1 0.02 270 / 0.85)",
+                border: "1.5px solid oklch(0.65 0.22 200 / 0.7)",
+                boxShadow:
+                  "0 0 18px oklch(0.65 0.22 200 / 0.45), 0 0 40px oklch(0.65 0.22 200 / 0.2)",
+              }}
+              animate={{
+                boxShadow: [
+                  "0 0 18px oklch(0.65 0.22 200 / 0.45), 0 0 40px oklch(0.65 0.22 200 / 0.2)",
+                  "0 0 28px oklch(0.65 0.22 200 / 0.7), 0 0 60px oklch(0.65 0.22 200 / 0.35)",
+                  "0 0 18px oklch(0.65 0.22 200 / 0.45), 0 0 40px oklch(0.65 0.22 200 / 0.2)",
+                ],
+              }}
+              transition={{ duration: 2, repeat: Number.POSITIVE_INFINITY }}
+            >
               <motion.p
-                className="text-white/60 text-sm mb-1"
+                className="text-white/60 text-xs mb-0.5 tracking-wider uppercase"
                 animate={{ opacity: [1, 0.4, 1] }}
                 transition={{ duration: 1.5, repeat: Number.POSITIVE_INFINITY }}
               >
@@ -557,19 +570,24 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
                 {targetUser?.name ?? "Unknown"}
               </h2>
               {targetUser?.city && (
-                <p className="text-white/50 text-sm mt-1">{targetUser.city}</p>
+                <p className="text-white/50 text-sm mt-1">
+                  📍 {targetUser.city}
+                </p>
               )}
-            </div>
+            </motion.div>
 
-            <button
-              type="button"
-              data-ocid="videocall.end_button"
-              className="w-16 h-16 rounded-full flex items-center justify-center transition-transform hover:scale-110 active:scale-95"
-              style={{ background: "oklch(0.5 0.25 25)" }}
-              onClick={endCall}
-            >
-              <PhoneOff size={24} className="text-white" />
-            </button>
+            <div className="flex flex-col items-center gap-2">
+              <button
+                type="button"
+                data-ocid="videocall.end_button"
+                className="w-16 h-16 rounded-full flex items-center justify-center transition-transform hover:scale-110 active:scale-95"
+                style={{ background: "oklch(0.5 0.25 25)" }}
+                onClick={endCall}
+              >
+                <PhoneOff size={24} className="text-white" />
+              </button>
+              <span className="text-white/60 text-xs">End Call</span>
+            </div>
           </motion.div>
         )}
 
@@ -588,42 +606,60 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
 
             {/* Dark overlay at top */}
             <div
-              className="absolute top-0 left-0 right-0 h-24 z-10"
+              className="absolute top-0 left-0 right-0 h-36 z-10"
               style={{
                 background:
-                  "linear-gradient(to bottom, oklch(0.05 0.01 270 / 0.8), transparent)",
+                  "linear-gradient(to bottom, oklch(0.05 0.01 270 / 0.9), transparent)",
               }}
             />
 
             {/* Dark overlay at bottom */}
             <div
-              className="absolute bottom-0 left-0 right-0 h-36 z-10"
+              className="absolute bottom-0 left-0 right-0 h-40 z-10"
               style={{
                 background:
                   "linear-gradient(to top, oklch(0.05 0.01 270 / 0.9), transparent)",
               }}
             />
 
-            {/* Top: caller name + duration */}
-            <div className="relative z-20 px-6 pt-6 flex items-center gap-3">
+            {/* Top: prominent user info card */}
+            <div className="relative z-20 px-5 pt-6 flex items-center gap-4">
+              {/* Large avatar */}
               <div
-                className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold text-white flex-shrink-0"
-                style={{ background: getAvatarColor(remoteUser?.id ?? "") }}
+                className="w-14 h-14 rounded-full flex items-center justify-center text-lg font-bold text-white flex-shrink-0"
+                style={{
+                  background: getAvatarColor(remoteUser?.id ?? ""),
+                  boxShadow: `0 0 16px ${getAvatarColor(remoteUser?.id ?? "")}80`,
+                  border: "2px solid rgba(255,255,255,0.25)",
+                }}
               >
                 {getInitials(remoteUser?.name ?? "?")}
               </div>
               <div>
-                <p className="text-white font-semibold">
+                <p className="text-white font-bold text-lg leading-tight">
                   {remoteUser?.name ?? "Unknown"}
                 </p>
-                <p className="text-white/60 text-sm">
-                  {formatDuration(callDuration)}
-                </p>
+                {remoteUser?.city && (
+                  <p className="text-white/60 text-sm">📍 {remoteUser.city}</p>
+                )}
+                <div className="flex items-center gap-1.5 mt-0.5">
+                  <span
+                    className="w-2 h-2 rounded-full inline-block"
+                    style={{
+                      background: "oklch(0.75 0.22 150)",
+                      boxShadow: "0 0 6px oklch(0.75 0.22 150)",
+                    }}
+                  />
+                  <p className="text-white/70 text-xs font-mono">
+                    {formatDuration(callDuration)}
+                  </p>
+                </div>
               </div>
             </div>
 
             {/* Local video PiP */}
-            <div className="absolute bottom-28 right-4 z-20">
+            <div className="absolute bottom-32 right-4 z-20">
+              {/* biome-ignore lint/a11y/useMediaCaption: local preview has no captions */}
               <video
                 ref={localVideoRef}
                 autoPlay
@@ -644,54 +680,88 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
             </div>
 
             {/* Controls */}
-            <div className="absolute bottom-0 left-0 right-0 z-20 flex items-center justify-center gap-6 pb-8">
-              <button
-                type="button"
-                data-ocid="videocall.mute_button"
-                className="w-14 h-14 rounded-full flex items-center justify-center transition-transform hover:scale-110 active:scale-95"
-                style={{
-                  background: isMuted
-                    ? "oklch(0.5 0.25 25)"
-                    : "oklch(0.25 0.04 270 / 0.8)",
-                  border: "1px solid oklch(0.4 0.08 270 / 0.4)",
-                }}
-                onClick={toggleMute}
-              >
-                {isMuted ? (
-                  <MicOff size={20} className="text-white" />
-                ) : (
-                  <Mic size={20} className="text-white" />
-                )}
-              </button>
+            <div className="absolute bottom-0 left-0 right-0 z-20 flex items-end justify-center gap-5 pb-8">
+              {/* Mute */}
+              <div className="flex flex-col items-center gap-1.5">
+                <button
+                  type="button"
+                  data-ocid="videocall.mute_button"
+                  className="w-14 h-14 rounded-full flex items-center justify-center transition-transform hover:scale-110 active:scale-95"
+                  style={{
+                    background: isMuted
+                      ? "oklch(0.5 0.25 25)"
+                      : "oklch(0.25 0.04 270 / 0.8)",
+                    border: "1px solid oklch(0.4 0.08 270 / 0.4)",
+                  }}
+                  onClick={toggleMute}
+                >
+                  {isMuted ? (
+                    <MicOff size={20} className="text-white" />
+                  ) : (
+                    <Mic size={20} className="text-white" />
+                  )}
+                </button>
+                <span className="text-white/60 text-xs">
+                  {isMuted ? "Unmute" : "Mute"}
+                </span>
+              </div>
 
-              <button
-                type="button"
-                data-ocid="videocall.end_button"
-                className="w-16 h-16 rounded-full flex items-center justify-center transition-transform hover:scale-110 active:scale-95"
-                style={{ background: "oklch(0.5 0.25 25)" }}
-                onClick={endCall}
-              >
-                <PhoneOff size={24} className="text-white" />
-              </button>
+              {/* End Call */}
+              <div className="flex flex-col items-center gap-1.5">
+                <button
+                  type="button"
+                  data-ocid="videocall.end_button"
+                  className="w-16 h-16 rounded-full flex items-center justify-center transition-transform hover:scale-110 active:scale-95"
+                  style={{ background: "oklch(0.5 0.25 25)" }}
+                  onClick={endCall}
+                >
+                  <PhoneOff size={24} className="text-white" />
+                </button>
+                <span className="text-white/60 text-xs">End Call</span>
+              </div>
 
-              <button
-                type="button"
-                data-ocid="videocall.camera_toggle"
-                className="w-14 h-14 rounded-full flex items-center justify-center transition-transform hover:scale-110 active:scale-95"
-                style={{
-                  background: isCameraOff
-                    ? "oklch(0.5 0.25 25)"
-                    : "oklch(0.25 0.04 270 / 0.8)",
-                  border: "1px solid oklch(0.4 0.08 270 / 0.4)",
-                }}
-                onClick={toggleCamera}
-              >
-                {isCameraOff ? (
-                  <VideoOff size={20} className="text-white" />
-                ) : (
-                  <Video size={20} className="text-white" />
-                )}
-              </button>
+              {/* Camera Toggle */}
+              <div className="flex flex-col items-center gap-1.5">
+                <button
+                  type="button"
+                  data-ocid="videocall.camera_toggle"
+                  className="w-14 h-14 rounded-full flex items-center justify-center transition-transform hover:scale-110 active:scale-95"
+                  style={{
+                    background: isCameraOff
+                      ? "oklch(0.5 0.25 25)"
+                      : "oklch(0.25 0.04 270 / 0.8)",
+                    border: "1px solid oklch(0.4 0.08 270 / 0.4)",
+                  }}
+                  onClick={toggleCamera}
+                >
+                  {isCameraOff ? (
+                    <VideoOff size={20} className="text-white" />
+                  ) : (
+                    <Video size={20} className="text-white" />
+                  )}
+                </button>
+                <span className="text-white/60 text-xs">
+                  {isCameraOff ? "Cam Off" : "Camera"}
+                </span>
+              </div>
+
+              {/* Exit */}
+              <div className="flex flex-col items-center gap-1.5">
+                <button
+                  type="button"
+                  data-ocid="videocall.exit_button"
+                  className="w-14 h-14 rounded-full flex items-center justify-center transition-transform hover:scale-110 active:scale-95"
+                  style={{
+                    background: "oklch(0.5 0.25 25)",
+                    border: "1px solid oklch(0.65 0.25 25 / 0.5)",
+                    boxShadow: "0 0 12px oklch(0.5 0.25 25 / 0.5)",
+                  }}
+                  onClick={endCall}
+                >
+                  <LogOut size={20} className="text-white" />
+                </button>
+                <span className="text-white/60 text-xs">Exit</span>
+              </div>
             </div>
           </div>
         )}
@@ -699,6 +769,7 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
         {/* Error */}
         {callError && (
           <div
+            data-ocid="videocall.error_state"
             className="fixed bottom-8 left-1/2 -translate-x-1/2 px-4 py-3 rounded-xl text-sm text-white max-w-sm text-center z-[110]"
             style={{ background: "oklch(0.4 0.2 25 / 0.95)" }}
           >

@@ -8,6 +8,7 @@ interface TicTacToe3DProps {
 
 type Cell = "X" | "O" | null;
 type Mode = "computer" | "2player" | null;
+type Difficulty = "easy" | "medium" | "hard";
 
 const WIN_LINES = [
   [0, 1, 2],
@@ -81,19 +82,11 @@ function minimax(board: Cell[], isMaximizing: boolean, depth: number): number {
   return best;
 }
 
-// Medium difficulty: 45% chance of random move, 55% best move
-function getComputerMove(board: Cell[]): number {
+function getBestMinimaxMove(board: Cell[]): number {
   const empty = board
     .map((c, i) => (c === null ? i : -1))
     .filter((i) => i >= 0);
   if (empty.length === 0) return -1;
-
-  // 45% chance random move
-  if (Math.random() < 0.45) {
-    return empty[Math.floor(Math.random() * empty.length)];
-  }
-
-  // 55% best minimax move
   let bestVal = Number.NEGATIVE_INFINITY;
   let bestMove = empty[0];
   for (const i of empty) {
@@ -106,6 +99,35 @@ function getComputerMove(board: Cell[]): number {
     }
   }
   return bestMove;
+}
+
+function getRandomMove(board: Cell[]): number {
+  const empty = board
+    .map((c, i) => (c === null ? i : -1))
+    .filter((i) => i >= 0);
+  if (empty.length === 0) return -1;
+  return empty[Math.floor(Math.random() * empty.length)];
+}
+
+function getComputerMoveByDifficulty(
+  board: Cell[],
+  difficulty: Difficulty,
+): number {
+  const boardCopy = [...board];
+  if (difficulty === "easy") {
+    // 80% random, 20% best
+    return Math.random() < 0.8
+      ? getRandomMove(boardCopy)
+      : getBestMinimaxMove(boardCopy);
+  }
+  if (difficulty === "medium") {
+    // 45% random, 55% best
+    return Math.random() < 0.45
+      ? getRandomMove(boardCopy)
+      : getBestMinimaxMove(boardCopy);
+  }
+  // hard: 100% best
+  return getBestMinimaxMove(boardCopy);
 }
 
 // Confetti particle component
@@ -175,12 +197,10 @@ function TrophyCelebration({ onDone }: { onDone: () => void }) {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
     >
-      {/* Confetti */}
       {particles.map((i) => (
         <ConfettiParticle key={i} index={i} />
       ))}
 
-      {/* Sparkle stars */}
       {[0, 1, 2, 3, 4, 5].map((i) => {
         const angle = (i / 6) * Math.PI * 2;
         const radius = 80;
@@ -212,7 +232,6 @@ function TrophyCelebration({ onDone }: { onDone: () => void }) {
         );
       })}
 
-      {/* Trophy */}
       <motion.div
         className="text-8xl select-none relative z-10"
         initial={{ scale: 0, rotate: -20 }}
@@ -226,7 +245,6 @@ function TrophyCelebration({ onDone }: { onDone: () => void }) {
         🏆
       </motion.div>
 
-      {/* Bouncing glow ring */}
       <motion.div
         className="absolute"
         style={{
@@ -244,7 +262,6 @@ function TrophyCelebration({ onDone }: { onDone: () => void }) {
         transition={{ duration: 1.2, repeat: Number.POSITIVE_INFINITY }}
       />
 
-      {/* YOU WIN text */}
       <motion.div
         className="mt-6 text-center relative z-10"
         initial={{ scale: 0, opacity: 0 }}
@@ -274,8 +291,33 @@ function TrophyCelebration({ onDone }: { onDone: () => void }) {
   );
 }
 
+const DIFFICULTY_CONFIG = {
+  easy: {
+    label: "Easy",
+    emoji: "🟢",
+    gradient: "linear-gradient(135deg, #16a34a, #22c55e)",
+    glow: "rgba(34,197,94,0.5)",
+    border: "rgba(34,197,94,0.4)",
+  },
+  medium: {
+    label: "Medium",
+    emoji: "🟡",
+    gradient: "linear-gradient(135deg, #d97706, #f59e0b)",
+    glow: "rgba(245,158,11,0.5)",
+    border: "rgba(245,158,11,0.4)",
+  },
+  hard: {
+    label: "Hard",
+    emoji: "🔴",
+    gradient: "linear-gradient(135deg, #dc2626, #ef4444)",
+    glow: "rgba(239,68,68,0.5)",
+    border: "rgba(239,68,68,0.4)",
+  },
+} as const;
+
 export default function TicTacToe3D({ open, onClose }: TicTacToe3DProps) {
   const [mode, setMode] = useState<Mode>(null);
+  const [difficulty, setDifficulty] = useState<Difficulty | null>(null);
   const [board, setBoard] = useState<Cell[]>(Array(9).fill(null));
   const [currentTurn, setCurrentTurn] = useState<"X" | "O">("X");
   const [thinking, setThinking] = useState(false);
@@ -286,15 +328,12 @@ export default function TicTacToe3D({ open, onClose }: TicTacToe3DProps) {
   const isDraw = !winResult && board.every((c) => c !== null);
   const gameOver = !!winResult || isDraw;
 
-  // Determine if the winner is the human player
   const isPlayerWin =
     !!winResult &&
     (mode === "2player" || (mode === "computer" && winResult.winner === "X"));
 
   const handleCellClick = (idx: number) => {
-    // Block clicks: occupied cell, game over, or computer thinking
     if (board[idx] !== null || gameOver || thinking) return;
-    // In computer mode, only X (player) can click
     if (mode === "computer" && currentTurn === "O") return;
 
     const newBoard = [...board];
@@ -305,13 +344,10 @@ export default function TicTacToe3D({ open, onClose }: TicTacToe3DProps) {
     const filled = newBoard.every((c) => c !== null);
 
     if (result || filled) {
-      // Game ended after player move
       if (result) {
         const playerWon =
           mode === "2player" || (mode === "computer" && result.winner === "X");
-        if (playerWon) {
-          setTimeout(() => setShowTrophy(true), 100);
-        }
+        if (playerWon) setTimeout(() => setShowTrophy(true), 100);
       }
       return;
     }
@@ -319,11 +355,11 @@ export default function TicTacToe3D({ open, onClose }: TicTacToe3DProps) {
     const nextTurn = currentTurn === "X" ? "O" : "X";
     setCurrentTurn(nextTurn);
 
-    if (mode === "computer" && nextTurn === "O") {
+    if (mode === "computer" && nextTurn === "O" && difficulty) {
       setThinking(true);
       thinkingTimerRef.current = setTimeout(() => {
         const boardCopy = [...newBoard];
-        const best = getComputerMove(boardCopy);
+        const best = getComputerMoveByDifficulty(boardCopy, difficulty);
         if (best >= 0) {
           boardCopy[best] = "O";
           setBoard(boardCopy);
@@ -349,9 +385,14 @@ export default function TicTacToe3D({ open, onClose }: TicTacToe3DProps) {
   const resetAll = () => {
     resetGame();
     setMode(null);
+    setDifficulty(null);
   };
 
-  // Cleanup timer on unmount
+  const changeDifficulty = () => {
+    resetGame();
+    setDifficulty(null);
+  };
+
   useEffect(() => {
     return () => {
       if (thinkingTimerRef.current) clearTimeout(thinkingTimerRef.current);
@@ -359,6 +400,20 @@ export default function TicTacToe3D({ open, onClose }: TicTacToe3DProps) {
   }, []);
 
   if (!open) return null;
+
+  // Determine current screen
+  const showModeSelect = !mode;
+  const showDifficultySelect = mode === "computer" && !difficulty;
+  const showGame = mode === "2player" || (mode === "computer" && !!difficulty);
+
+  const headerSubtitle =
+    mode === "computer" && difficulty
+      ? `vs Computer · ${DIFFICULTY_CONFIG[difficulty].label}`
+      : mode === "computer"
+        ? "vs Computer"
+        : mode === "2player"
+          ? "2 Players"
+          : "Choose Mode";
 
   return (
     <AnimatePresence>
@@ -381,7 +436,6 @@ export default function TicTacToe3D({ open, onClose }: TicTacToe3DProps) {
           animate={{ scale: 1, y: 0 }}
           exit={{ scale: 0.85, y: 30 }}
         >
-          {/* Trophy Celebration Overlay */}
           <AnimatePresence>
             {showTrophy && (
               <TrophyCelebration onDone={() => setShowTrophy(false)} />
@@ -403,15 +457,26 @@ export default function TicTacToe3D({ open, onClose }: TicTacToe3DProps) {
                   className="text-xs"
                   style={{ color: "rgba(200,150,255,0.65)" }}
                 >
-                  {mode === "computer"
-                    ? "vs Computer"
-                    : mode === "2player"
-                      ? "2 Players"
-                      : "Choose Mode"}
+                  {headerSubtitle}
                 </p>
               </div>
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap justify-end">
+              {mode === "computer" && difficulty && (
+                <button
+                  type="button"
+                  data-ocid="ttt.change_difficulty_button"
+                  onClick={changeDifficulty}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                  style={{
+                    background: "rgba(20,100,20,0.25)",
+                    border: "1px solid rgba(34,197,94,0.35)",
+                    color: "#86efac",
+                  }}
+                >
+                  Difficulty
+                </button>
+              )}
               {mode && (
                 <button
                   type="button"
@@ -444,8 +509,7 @@ export default function TicTacToe3D({ open, onClose }: TicTacToe3DProps) {
           </div>
 
           <div className="p-6">
-            {!mode ? (
-              /* Mode Selection */
+            {showModeSelect && (
               <motion.div
                 className="text-center space-y-4"
                 initial={{ opacity: 0, y: 10 }}
@@ -479,8 +543,57 @@ export default function TicTacToe3D({ open, onClose }: TicTacToe3DProps) {
                   👥 2 Players
                 </button>
               </motion.div>
-            ) : (
-              /* Game Board */
+            )}
+
+            {showDifficultySelect && (
+              <motion.div
+                className="text-center space-y-4"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                key="difficulty-select"
+              >
+                <p className="text-white font-semibold text-base mb-1">
+                  Choose Difficulty
+                </p>
+                <p className="text-white/50 text-xs mb-6">
+                  How hard should the computer play?
+                </p>
+
+                {(["easy", "medium", "hard"] as Difficulty[]).map((d) => {
+                  const cfg = DIFFICULTY_CONFIG[d];
+                  return (
+                    <motion.button
+                      key={d}
+                      type="button"
+                      data-ocid={`ttt.${d}_button`}
+                      onClick={() => setDifficulty(d)}
+                      className="w-full py-4 rounded-2xl font-semibold text-white flex items-center justify-between px-6 text-base"
+                      style={{
+                        background: cfg.gradient,
+                        boxShadow: `0 0 25px ${cfg.glow}`,
+                        border: `1px solid ${cfg.border}`,
+                      }}
+                      whileHover={{ scale: 1.04, y: -2 }}
+                      whileTap={{ scale: 0.96 }}
+                    >
+                      <span className="flex items-center gap-3">
+                        <span className="text-xl">{cfg.emoji}</span>
+                        <span>{cfg.label}</span>
+                      </span>
+                      <span className="text-sm font-normal opacity-80">
+                        {d === "easy"
+                          ? "Random AI"
+                          : d === "medium"
+                            ? "Balanced"
+                            : "Unbeatable"}
+                      </span>
+                    </motion.button>
+                  );
+                })}
+              </motion.div>
+            )}
+
+            {showGame && (
               <div className="flex flex-col items-center gap-5">
                 {/* Status */}
                 <div className="text-center min-h-[32px] flex items-center justify-center">
