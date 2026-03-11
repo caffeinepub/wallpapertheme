@@ -258,6 +258,22 @@ export default function App() {
     };
   }, [currentUser]);
 
+  // Mark messages as seen when conversation is selected
+  useEffect(() => {
+    if (!selectedConvId || !currentUser) return;
+    setMessages((prev) => {
+      const updated = prev.map((m) =>
+        m.conversationId === selectedConvId &&
+        m.senderId !== currentUser.id &&
+        !m.seen
+          ? { ...m, seen: true }
+          : m,
+      );
+      saveToStorage("reckon_messages", updated);
+      return updated;
+    });
+  }, [selectedConvId, currentUser]);
+
   const refreshData = () => {
     setConversations(loadFromStorage("reckon_conversations", []));
     setMessages(loadFromStorage("reckon_messages", []));
@@ -321,6 +337,8 @@ export default function App() {
       saveToStorage("reckon_conversations", next);
       return next;
     });
+    // Refresh allUsers in case group membership needs latest user data
+    setAllUsers(loadFromStorage("reckon_users", []));
   };
 
   if (!currentUser) {

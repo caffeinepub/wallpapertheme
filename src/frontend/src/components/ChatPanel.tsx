@@ -204,6 +204,13 @@ export default function ChatPanel() {
 
   const convName = getConvName(conv, currentUser.id, allUsers);
 
+  // Count online members in group (excluding self)
+  const groupOnlineCount = conv.isGroup
+    ? conv.members.filter(
+        (id) => id !== currentUser.id && onlineUsers.some((u) => u.id === id),
+      ).length
+    : 0;
+
   return (
     <div className="flex flex-col h-full relative">
       {/* Header */}
@@ -270,6 +277,12 @@ export default function ChatPanel() {
             ) : conv.isGroup ? (
               <span className="text-muted-foreground">
                 {conv.members.length} members
+                {groupOnlineCount > 0 && (
+                  <span style={{ color: "#22c55e" }}>
+                    {" · "}
+                    {groupOnlineCount} active
+                  </span>
+                )}
               </span>
             ) : isPartnerOnline ? (
               <span style={{ color: "#22c55e" }}>Online</span>

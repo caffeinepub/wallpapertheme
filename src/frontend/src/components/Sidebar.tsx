@@ -80,7 +80,9 @@ export default function Sidebar({ onNewGroup }: SidebarProps) {
   });
 
   const getLastMessage = (convId: string) => {
-    const msgs = messages.filter((m) => m.conversationId === convId);
+    const msgs = messages
+      .filter((m) => m.conversationId === convId)
+      .sort((a, b) => a.timestamp - b.timestamp);
     if (!msgs.length) return null;
     return msgs[msgs.length - 1];
   };

@@ -1,30 +1,30 @@
-# Reckon Messenger
+# Reckon - Omegle Video Chat
 
 ## Current State
-- Login page: pink/black background, slow zoom-out animation, WhatsApp support on login only, language translation widget (Globe button)
-- Sidebar: Ludo game button (vs real users only)
-- App: video call (WebRTC), real-time users, footer with RAHUL PARMAR neon glow
-- "Built with Caffeine AI" already removed
+The app has an OmegleChat.tsx component (1977 lines) but real-time WebRTC between real users is broken. Camera/mic access issues persist. The backend has no Omegle signaling support.
 
 ## Requested Changes (Diff)
 
 ### Add
-- 3D Tic-Tac-Toe game component (TicTacToe3D.tsx) with vs Computer and vs Player modes
-- Tic-Tac-Toe button in sidebar next to Ludo button
-- Ludo vs Computer mode: computer AI auto-rolls and moves its token
-- Omegle random video chat feature: button in app header, opens fullscreen modal with user's camera + simulated stranger UX and Next button
+- Backend Omegle signaling: queue, matchmaking, WebRTC signal exchange, chat messages
+- Proper getUserMedia with error recovery in frontend
+- Real WebRTC peer connection using backend as signaling relay
+- Local video preview shown immediately on permission grant
+- Stranger video shown when matched and connected
+- Camera on/off toggle, mic on/off toggle
+- Chat panel alongside video
+- Country/age display for matched user
+- "Next" button to skip to a new stranger
+- Connection sound/animation on match
 
 ### Modify
-- LudoGame.tsx: add mode selector ("vs Players" or "vs Computer"); computer players auto-roll with 1.5s delay after human turn
-- Sidebar.tsx: add TicTacToe3D button alongside Ludo button
-- App.tsx: add "Omegle" button in header bar visible when logged in
+- OmegleChat.tsx: full rewrite for working WebRTC with backend signaling
+- Backend main.mo: add Omegle signaling APIs
 
 ### Remove
-- Nothing
+- Old broken OmegleChat simulation code
 
 ## Implementation Plan
-1. Create TicTacToe3D.tsx - CSS 3D perspective board, X/O as 3D shapes, computer AI with minimax
-2. Modify LudoGame.tsx - add mode selector, computer auto-roll logic
-3. Modify Sidebar.tsx - add TicTacToe3D state and button
-4. Create OmegleChat.tsx - fullscreen modal, getUserMedia camera, simulated stranger connection
-5. Modify App.tsx - add Omegle button in header
+1. Add Omegle signaling to main.mo: joinQueue, pollMatch, sendSignal, getSignals, sendOmegleChat, getOmegleChats, leaveOmegle
+2. Regenerate backend bindings
+3. Rewrite OmegleChat.tsx with real WebRTC + backend polling signaling
