@@ -2,14 +2,14 @@ import Map "mo:core/Map";
 import Iter "mo:core/Iter";
 import Runtime "mo:core/Runtime";
 import Principal "mo:core/Principal";
-import Migration "migration";
+
 import Storage "blob-storage/Storage";
 import Array "mo:core/Array";
 import MixinStorage "blob-storage/Mixin";
 import AccessControl "authorization/access-control";
 import MixinAuthorization "authorization/MixinAuthorization";
 
-(with migration = Migration.run)
+
 actor {
   // Initialize the access control system
   let accessControlState = AccessControl.initState();

@@ -136,7 +136,6 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
   }, [activeCallUserId, incomingCallFrom, callState]);
 
   // Poll for incoming calls + signals
-  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional - stable poll using refs
   useEffect(() => {
     pollRef.current = setInterval(() => {
       const state = callStateRef.current;
@@ -625,7 +624,6 @@ export default function VideoCall({ onContextReady }: VideoCallProps) {
 
             {/* Local video PiP */}
             <div className="absolute bottom-28 right-4 z-20">
-              {/* biome-ignore lint/a11y/useMediaCaption: local preview, no captions needed */}
               <video
                 ref={localVideoRef}
                 autoPlay
