@@ -1,8 +1,6 @@
 import {
   Camera,
   CameraOff,
-  ChevronRight,
-  Globe,
   MessageSquare,
   Mic,
   MicOff,
@@ -13,7 +11,9 @@ import {
   X,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
+import Peer, { type MediaConnection } from "peerjs";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useActor } from "../hooks/useActor";
 
 interface OmegleChatProps {
   open: boolean;
@@ -210,16 +210,11 @@ const LANGUAGES = [
   { code: "bn", name: "Bengali" },
 ];
 
-const STUN_SERVERS = [
-  { urls: "stun:stun.l.google.com:19302" },
-  { urls: "stun:stun1.l.google.com:19302" },
-];
-
-type ChatState = "idle" | "requesting" | "searching" | "connected" | "error";
+type ChatState = "idle" | "searching" | "connected" | "error";
 
 interface Message {
   id: string;
-  from: "me" | "stranger";
+  from: "me" | "stranger" | "system";
   text: string;
   ts: number;
 }
@@ -228,7 +223,7 @@ function playConnectTone() {
   try {
     const ctx = new AudioContext();
     const notes = [261.63, 329.63, 392.0, 523.25];
-    notes.forEach((freq, i) => {
+    for (const [i, freq] of notes.entries()) {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.connect(gain);
@@ -243,7 +238,7 @@ function playConnectTone() {
       gain.gain.linearRampToValueAtTime(0, ctx.currentTime + i * 0.12 + 0.22);
       osc.start(ctx.currentTime + i * 0.12);
       osc.stop(ctx.currentTime + i * 0.12 + 0.22);
-    });
+    }
     setTimeout(() => ctx.close(), 1500);
   } catch (_) {}
 }
@@ -254,244 +249,630 @@ export default function OmegleChat({ open, onClose }: OmegleChatProps) {
   const [micOn, setMicOn] = useState(true);
   const [messages, setMessages] = useState<Message[]>([]);
   const [chatInput, setChatInput] = useState("");
-  const [language, setLanguage] = useState("en");
+  const [showChat, setShowChat] = useState(false);
   const [userCountry, setUserCountry] = useState("India");
   const [userAge, setUserAge] = useState(22);
+  const [language, setLanguage] = useState("en");
   const [strangerInfo, setStrangerInfo] = useState<{
     country: string;
     age: number;
   } | null>(null);
   const [activeCount, setActiveCount] = useState(0);
-  const [showChat, setShowChat] = useState(false);
   const [ripple, setRipple] = useState(false);
   const [permError, setPermError] = useState("");
+  const [searchSeconds, setSearchSeconds] = useState(0);
+  const [camReady, setCamReady] = useState(false);
+
+  const { actor } = useActor();
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
-  const pcRef = useRef<RTCPeerConnection | null>(null);
-  const dcRef = useRef<RTCDataChannel | null>(null);
-  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const peerRef = useRef<Peer | null>(null);
+  const callRef = useRef<MediaConnection | null>(null);
+  const sidRef = useRef<string>("");
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const searchTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const dataConnRef = useRef<ReturnType<Peer["connect"]> | null>(null);
 
-  // Simulated active count
-  useEffect(() => {
-    if (!open) return;
-    const base = 150 + Math.floor(Math.random() * 300);
-    setActiveCount(base);
-    const t = setInterval(() => {
-      setActiveCount((c) => c + Math.floor(Math.random() * 10) - 4);
-    }, 5000);
-    return () => clearInterval(t);
-  }, [open]);
-
-  // Scroll chat to bottom
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    // eslint-disable-next-line
-  }, []); // messages ref scroll
-
-  // Apply camera/mic mute to existing stream
-  useEffect(() => {
-    if (!localStreamRef.current) return;
-    for (const t of localStreamRef.current.getVideoTracks()) t.enabled = camOn;
-    for (const t of localStreamRef.current.getAudioTracks()) t.enabled = micOn;
-  }, [camOn, micOn]);
-
-  const cleanup = useCallback(() => {
-    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
-    if (dcRef.current) {
-      try {
-        dcRef.current.close();
-      } catch (_) {}
-      dcRef.current = null;
-    }
-    if (pcRef.current) {
-      try {
-        pcRef.current.close();
-      } catch (_) {}
-      pcRef.current = null;
-    }
-    setStrangerInfo(null);
-    setMessages([]);
-    setRipple(false);
+  // ── Helpers (must be defined before useEffects that use them) ──────────────
+  const addSystemMsg = useCallback((text: string) => {
+    setMessages((m) => [
+      ...m,
+      { id: crypto.randomUUID(), from: "system", text, ts: Date.now() },
+    ]);
   }, []);
 
-  const stopAll = useCallback(() => {
-    cleanup();
-    if (localStreamRef.current) {
-      for (const t of localStreamRef.current.getTracks()) t.stop();
-      localStreamRef.current = null;
-    }
-    setState("idle");
-    setPermError("");
-  }, [cleanup]);
+  const cleanup = useCallback(
+    (stopStream = false) => {
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+      if (searchTimerRef.current) {
+        clearInterval(searchTimerRef.current);
+        searchTimerRef.current = null;
+      }
+      if (sidRef.current) {
+        try {
+          (actor as any).leaveOmegleQueue(sidRef.current);
+        } catch (_) {}
+        sidRef.current = "";
+      }
+      if (callRef.current) {
+        try {
+          callRef.current.close();
+        } catch (_) {}
+        callRef.current = null;
+      }
+      if (dataConnRef.current) {
+        try {
+          dataConnRef.current.close();
+        } catch (_) {}
+        dataConnRef.current = null;
+      }
+      if (peerRef.current) {
+        try {
+          peerRef.current.destroy();
+        } catch (_) {}
+        peerRef.current = null;
+      }
+      if (stopStream && localStreamRef.current) {
+        for (const t of localStreamRef.current.getTracks()) t.stop();
+        localStreamRef.current = null;
+        setCamReady(false);
+      }
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+      setStrangerInfo(null);
+      setMessages([]);
+      setRipple(false);
+    },
+    [actor],
+  );
 
-  // Close resets everything
+  // ── Auto-request camera/mic when Omegle opens ─────────────────────────────
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only re-run on open change
   useEffect(() => {
-    if (!open) stopAll();
-  }, [open, stopAll]);
+    if (!open) return;
+    if (localStreamRef.current) return; // already have stream
+    let cancelled = false;
+    (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+            facingMode: "user",
+          },
+          audio: true,
+        });
+        if (cancelled) {
+          for (const t of stream.getTracks()) t.stop();
+          return;
+        }
+        localStreamRef.current = stream;
+        setCamReady(true);
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+          localVideoRef.current.play().catch(() => {});
+        }
+      } catch (err: unknown) {
+        if (cancelled) return;
+        const errName = (err as Error)?.name ?? "";
+        if (
+          errName === "NotAllowedError" ||
+          errName === "PermissionDeniedError"
+        ) {
+          setPermError(
+            "Camera/microphone access was denied. Please allow access and try again.",
+          );
+        } else if (errName === "NotFoundError") {
+          setPermError("No camera or microphone found on this device.");
+        } else {
+          setPermError(
+            "Could not access camera/microphone. Please check your browser settings.",
+          );
+        }
+        setState("error");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
-  // Build a WebRTC peer connection and simulate finding a stranger
-  const startSearch = useCallback(
-    async (stream: MediaStream) => {
-      setState("searching");
-      cleanup();
+  // Stop everything when modal closes
+  useEffect(() => {
+    if (!open) cleanup(true);
+  }, [open, cleanup]);
 
-      // Simulate searching for 2-5 seconds then "connect" (loopback for demo since no real signaling backend)
-      const delay = 2000 + Math.random() * 3000;
-      searchTimerRef.current = setTimeout(async () => {
-        // Pick a random stranger
-        const randCountry =
-          WORLD_COUNTRIES[Math.floor(Math.random() * WORLD_COUNTRIES.length)];
-        const randAge = 18 + Math.floor(Math.random() * 42);
-        setStrangerInfo({ country: randCountry, age: randAge });
+  // Re-attach local stream to video element whenever state changes
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional re-attach
+  useEffect(() => {
+    if (camReady && localVideoRef.current && localStreamRef.current) {
+      localVideoRef.current.srcObject = localStreamRef.current;
+      localVideoRef.current.play().catch(() => {});
+    }
+  }, [camReady, state]);
 
-        // WebRTC loopback so local video shows in both panels
-        const pc1 = new RTCPeerConnection({ iceServers: STUN_SERVERS });
-        const pc2 = new RTCPeerConnection({ iceServers: STUN_SERVERS });
-        pcRef.current = pc1;
+  // Fetch active count
+  useEffect(() => {
+    if (!open) return;
+    const fetchCount = async () => {
+      try {
+        const count = await (actor as any).getOmegleActiveCount();
+        setActiveCount(Number(count));
+      } catch (_) {
+        setActiveCount(Math.floor(Math.random() * 300) + 80);
+      }
+    };
+    fetchCount();
+    const t = setInterval(fetchCount, 5000);
+    return () => clearInterval(t);
+  }, [open, actor]);
 
-        // Data channel for text chat
-        const dc = pc1.createDataChannel("chat");
-        dcRef.current = dc;
-        dc.onmessage = (e) => {
-          setMessages((m) => [
-            ...m,
-            {
-              id: crypto.randomUUID(),
-              from: "stranger",
-              text: e.data,
-              ts: Date.now(),
-            },
-          ]);
-        };
-        pc2.ondatachannel = (e) => {
-          e.channel.onmessage = (ev) => {
+  // Scroll chat to bottom
+  // biome-ignore lint/correctness/useExhaustiveDependencies: messages triggers scroll
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  // Apply cam/mic mute/unmute
+  useEffect(() => {
+    const stream = localStreamRef.current;
+    if (!stream) return;
+    for (const t of stream.getVideoTracks()) t.enabled = camOn;
+    for (const t of stream.getAudioTracks()) t.enabled = micOn;
+  }, [camOn, micOn]);
+
+  // ── handleConnectedCall ───────────────────────────────────────────────────
+  const handleConnectedCall = useCallback(
+    (call: MediaConnection, peerCountry: string, peerAge: number) => {
+      callRef.current = call;
+      call.on("stream", (remoteStream) => {
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = remoteStream;
+          remoteVideoRef.current.play().catch(() => {});
+        }
+        setState("connected");
+        setStrangerInfo({ country: peerCountry, age: peerAge });
+        setRipple(true);
+        playConnectTone();
+        setTimeout(() => setRipple(false), 1500);
+        setMessages((m) => [
+          ...m,
+          {
+            id: crypto.randomUUID(),
+            from: "system",
+            text: `✅ Connected with stranger from ${peerCountry}, age ${peerAge}`,
+            ts: Date.now(),
+          },
+        ]);
+      });
+      call.on("close", () => {
+        setMessages((m) => [
+          ...m,
+          {
+            id: crypto.randomUUID(),
+            from: "system",
+            text: "👋 Stranger disconnected.",
+            ts: Date.now(),
+          },
+        ]);
+        setState("idle");
+      });
+      call.on("error", () => {
+        setMessages((m) => [
+          ...m,
+          {
+            id: crypto.randomUUID(),
+            from: "system",
+            text: "⚠️ Connection error. Click Next to try again.",
+            ts: Date.now(),
+          },
+        ]);
+      });
+    },
+    [],
+  );
+
+  // ── startSearch ───────────────────────────────────────────────────────────
+  const startSearch = useCallback(async () => {
+    const stream = localStreamRef.current;
+    if (!stream) {
+      // Try to get camera first
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user" },
+          audio: true,
+        });
+        localStreamRef.current = s;
+        setCamReady(true);
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = s;
+          localVideoRef.current.play().catch(() => {});
+        }
+      } catch (_err) {
+        setPermError(
+          "Camera/microphone access is required to start video chat. Please allow access.",
+        );
+        setState("error");
+        return;
+      }
+    }
+
+    const activeStream = localStreamRef.current;
+    if (!activeStream) return;
+
+    setState("searching");
+    setSearchSeconds(0);
+    setMessages([]);
+    setStrangerInfo(null);
+
+    // Clean up any existing connection
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+    if (searchTimerRef.current) {
+      clearInterval(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+    if (sidRef.current) {
+      try {
+        await (actor as any).leaveOmegleQueue(sidRef.current);
+      } catch (_) {}
+      sidRef.current = "";
+    }
+    if (callRef.current) {
+      try {
+        callRef.current.close();
+      } catch (_) {}
+      callRef.current = null;
+    }
+    if (peerRef.current) {
+      try {
+        peerRef.current.destroy();
+      } catch (_) {}
+      peerRef.current = null;
+    }
+    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+
+    // Unique peer ID for this session
+    const myPeerId = `rck-${crypto.randomUUID().replace(/-/g, "").slice(0, 18)}`;
+
+    // Create PeerJS instance (uses peerjs.com cloud signaling server)
+    let peer: Peer;
+    try {
+      peer = new Peer(myPeerId, {
+        host: "0.peerjs.com",
+        port: 443,
+        path: "/",
+        secure: true,
+        debug: 0,
+        config: {
+          iceServers: [
+            { urls: "stun:stun.l.google.com:19302" },
+            { urls: "stun:stun1.l.google.com:19302" },
+            { urls: "stun:stun2.l.google.com:19302" },
+            { urls: "stun:stun.cloudflare.com:3478" },
+          ],
+        },
+      });
+      peerRef.current = peer;
+    } catch (_err) {
+      setPermError(
+        "Could not initialize video connection. Please refresh and try again.",
+      );
+      setState("error");
+      return;
+    }
+
+    // Wait for PeerJS to connect to its cloud signaling server
+    const peerOpen = await new Promise<boolean>((resolve) => {
+      const timeout = setTimeout(() => resolve(false), 12000);
+      peer.on("open", () => {
+        clearTimeout(timeout);
+        resolve(true);
+      });
+      peer.on("error", () => {
+        clearTimeout(timeout);
+        resolve(false);
+      });
+    });
+
+    if (!peerOpen || !peerRef.current) {
+      setPermError(
+        "Could not connect to video server. Check your internet and try again.",
+      );
+      setState("error");
+      try {
+        peer.destroy();
+      } catch (_) {}
+      return;
+    }
+
+    // Handle incoming calls from strangers
+    peer.on("call", (incomingCall) => {
+      incomingCall.answer(activeStream);
+      // Get stranger info from dataChannel or use stored state
+      handleConnectedCall(incomingCall, "Unknown", 0);
+    });
+
+    // Handle incoming data connection (text chat + metadata)
+    peer.on("connection", (conn) => {
+      dataConnRef.current = conn;
+      conn.on("data", (data) => {
+        if (
+          typeof data === "object" &&
+          data !== null &&
+          "type" in (data as object)
+        ) {
+          const d = data as {
+            type: string;
+            country?: string;
+            age?: number;
+            text?: string;
+          };
+          if (d.type === "meta") {
+            setStrangerInfo({
+              country: d.country ?? "Unknown",
+              age: d.age ?? 0,
+            });
+            // Update call handler info
+            if (callRef.current) {
+              setMessages((m) => [
+                ...m,
+                {
+                  id: crypto.randomUUID(),
+                  from: "system",
+                  text: `🌍 Stranger is from ${d.country}, age ${d.age}`,
+                  ts: Date.now(),
+                },
+              ]);
+            }
+          } else if (d.type === "chat" && d.text) {
             setMessages((m) => [
               ...m,
               {
                 id: crypto.randomUUID(),
                 from: "stranger",
-                text: ev.data,
+                text: d.text as string,
                 ts: Date.now(),
               },
             ]);
-          };
-        };
-
-        // Ice candidate exchange
-        pc1.onicecandidate = (e) => {
-          if (e.candidate) pc2.addIceCandidate(e.candidate).catch(() => {});
-        };
-        pc2.onicecandidate = (e) => {
-          if (e.candidate) pc1.addIceCandidate(e.candidate).catch(() => {});
-        };
-
-        // Attach remote stream to video
-        pc2.ontrack = (e) => {
-          if (remoteVideoRef.current && e.streams[0]) {
-            remoteVideoRef.current.srcObject = e.streams[0];
           }
-        };
-
-        // Add local tracks to pc1
-        for (const t of stream.getTracks()) pc1.addTrack(t, stream);
-        // Mirror to pc2
-        for (const t of stream.getTracks()) pc2.addTrack(t, stream);
-
-        try {
-          const offer = await pc1.createOffer();
-          await pc1.setLocalDescription(offer);
-          await pc2.setRemoteDescription(offer);
-          const answer = await pc2.createAnswer();
-          await pc2.setLocalDescription(answer);
-          await pc1.setRemoteDescription(answer);
-        } catch (_) {}
-
-        setState("connected");
-        setRipple(true);
-        playConnectTone();
-        setTimeout(() => setRipple(false), 1500);
-
-        // Simulate stranger sending a greeting message
-        setTimeout(() => {
+        } else if (typeof data === "string") {
           setMessages((m) => [
             ...m,
             {
               id: crypto.randomUUID(),
               from: "stranger",
-              text: "👋 Hello! How are you?",
+              text: data,
               ts: Date.now(),
             },
           ]);
-        }, 1000);
-      }, delay);
-    },
-    [cleanup],
-  );
-
-  const requestMediaAndStart = useCallback(async () => {
-    setState("requesting");
-    setPermError("");
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true,
+        }
       });
-      localStreamRef.current = stream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-      }
-      await startSearch(stream);
-    } catch (err: unknown) {
-      const e = err as { name?: string };
-      if (e.name === "NotAllowedError" || e.name === "PermissionDeniedError") {
-        setPermError(
-          "Camera/mic access denied. Please allow access in your browser settings and refresh.",
-        );
-      } else if (e.name === "NotFoundError") {
-        setPermError("No camera or microphone found on this device.");
-      } else {
-        setPermError(
-          "Could not access camera or microphone. Please check your device.",
-        );
-      }
+    });
+
+    // Join ICP backend queue
+    let sid: string;
+    try {
+      sid = await (actor as any).joinOmegleQueue(userCountry, BigInt(userAge));
+      sidRef.current = sid;
+      // Broadcast our PeerJS ID via signal channel
+      await (actor as any).sendOmegleSignal(sid, "peerId", myPeerId);
+    } catch (_err) {
+      setPermError(
+        "Could not connect to matchmaking server. Please try again.",
+      );
       setState("error");
+      try {
+        peer.destroy();
+      } catch (_) {}
+      return;
     }
-  }, [startSearch]);
+
+    // Search timer
+    searchTimerRef.current = setInterval(
+      () => setSearchSeconds((s) => s + 1),
+      1000,
+    );
+
+    // Poll ICP backend for a match
+    pollTimerRef.current = setInterval(async () => {
+      if (!sidRef.current || !peerRef.current) return;
+      try {
+        const match = await (actor as any).pollOmegleMatch(sidRef.current);
+        if (!match) return;
+
+        if (pollTimerRef.current) {
+          clearInterval(pollTimerRef.current);
+          pollTimerRef.current = null;
+        }
+        if (searchTimerRef.current) {
+          clearInterval(searchTimerRef.current);
+          searchTimerRef.current = null;
+        }
+
+        const peerCountry = match.peerCountry as string;
+        const peerAge = Number(match.peerAge);
+        const isInitiator = match.isInitiator as boolean;
+
+        // Get partner's PeerJS ID
+        let partnerPeerId = "";
+        for (let attempt = 0; attempt < 25; attempt++) {
+          try {
+            const signals = (await (actor as any).getOmegleSignals(
+              sidRef.current,
+            )) as Array<{ from: string; msgType: string; data: string }>;
+            const peerIdSig = signals.find(
+              (s) => s.msgType === "peerId" && s.data !== myPeerId,
+            );
+            if (peerIdSig) {
+              partnerPeerId = peerIdSig.data;
+              break;
+            }
+          } catch (_) {}
+          await new Promise((r) => setTimeout(r, 400));
+        }
+
+        if (!partnerPeerId) {
+          // Could not get partner PeerJS ID, re-enter queue
+          setMessages((m) => [
+            ...m,
+            {
+              id: crypto.randomUUID(),
+              from: "system",
+              text: "Match found but reconnecting...",
+              ts: Date.now(),
+            },
+          ]);
+          return;
+        }
+
+        if (isInitiator && peerRef.current) {
+          // Initiator: call the partner
+          const call = peerRef.current.call(partnerPeerId, activeStream);
+          handleConnectedCall(call, peerCountry, peerAge);
+
+          // Also open a data connection for metadata + text chat
+          const dc = peerRef.current.connect(partnerPeerId);
+          dataConnRef.current = dc;
+          dc.on("open", () => {
+            // Send our metadata to stranger
+            dc.send(
+              JSON.stringify({
+                type: "meta",
+                country: userCountry,
+                age: userAge,
+              }),
+            );
+          });
+          dc.on("data", (data) => {
+            if (typeof data === "string") {
+              try {
+                const d = JSON.parse(data) as {
+                  type: string;
+                  country?: string;
+                  age?: number;
+                  text?: string;
+                };
+                if (d.type === "chat" && d.text) {
+                  setMessages((m) => [
+                    ...m,
+                    {
+                      id: crypto.randomUUID(),
+                      from: "stranger",
+                      text: d.text as string,
+                      ts: Date.now(),
+                    },
+                  ]);
+                }
+              } catch (_) {
+                setMessages((m) => [
+                  ...m,
+                  {
+                    id: crypto.randomUUID(),
+                    from: "stranger",
+                    text: data,
+                    ts: Date.now(),
+                  },
+                ]);
+              }
+            }
+          });
+        } else {
+          // Non-initiator: update incoming call listener with correct info
+          setStrangerInfo({ country: peerCountry, age: peerAge });
+          peer.removeAllListeners("call");
+          peer.on("call", (incomingCall) => {
+            incomingCall.answer(activeStream);
+            handleConnectedCall(incomingCall, peerCountry, peerAge);
+          });
+          // Send our metadata once data connection is established
+          peer.removeAllListeners("connection");
+          peer.on("connection", (conn) => {
+            dataConnRef.current = conn;
+            conn.on("open", () => {
+              conn.send(
+                JSON.stringify({
+                  type: "meta",
+                  country: userCountry,
+                  age: userAge,
+                }),
+              );
+            });
+            conn.on("data", (data) => {
+              if (typeof data === "string") {
+                try {
+                  const d = JSON.parse(data) as { type: string; text?: string };
+                  if (d.type === "chat" && d.text) {
+                    setMessages((m) => [
+                      ...m,
+                      {
+                        id: crypto.randomUUID(),
+                        from: "stranger",
+                        text: d.text as string,
+                        ts: Date.now(),
+                      },
+                    ]);
+                  }
+                } catch (_) {
+                  setMessages((m) => [
+                    ...m,
+                    {
+                      id: crypto.randomUUID(),
+                      from: "stranger",
+                      text: data,
+                      ts: Date.now(),
+                    },
+                  ]);
+                }
+              }
+            });
+          });
+        }
+      } catch (_err) {
+        // Silently retry
+      }
+    }, 1000);
+  }, [actor, userCountry, userAge, handleConnectedCall]);
+
+  const handleStop = useCallback(() => {
+    cleanup();
+    setState("idle");
+  }, [cleanup]);
 
   const handleNext = useCallback(() => {
     cleanup();
-    if (localStreamRef.current) {
-      startSearch(localStreamRef.current);
-    }
+    setState("idle");
+    setTimeout(() => startSearch(), 200);
   }, [cleanup, startSearch]);
 
-  const handleStop = useCallback(() => {
-    stopAll();
-  }, [stopAll]);
-
-  const sendMessage = useCallback(() => {
+  const sendChatMessage = useCallback(() => {
     const text = chatInput.trim();
-    if (!text) return;
-    setMessages((m) => [
-      ...m,
-      { id: crypto.randomUUID(), from: "me", text, ts: Date.now() },
-    ]);
-    setChatInput("");
-    // Send over data channel if open
-    if (dcRef.current?.readyState === "open") {
-      dcRef.current.send(text);
+    if (!text || !dataConnRef.current) return;
+    try {
+      dataConnRef.current.send(JSON.stringify({ type: "chat", text }));
+      setMessages((m) => [
+        ...m,
+        { id: crypto.randomUUID(), from: "me", text, ts: Date.now() },
+      ]);
+      setChatInput("");
+    } catch (_) {
+      addSystemMsg("Could not send message.");
     }
-  }, [chatInput]);
+  }, [chatInput, addSystemMsg]);
 
   if (!open) return null;
 
-  const flag = userCountry ? (COUNTRY_FLAGS[userCountry] ?? "🌍") : "🌍";
-  const _strangerFlag = strangerInfo
+  const flag = COUNTRY_FLAGS[userCountry] ?? "🌍";
+  const strangerFlag = strangerInfo
     ? (COUNTRY_FLAGS[strangerInfo.country] ?? "🌍")
-    : "🌍";
+    : "";
 
   return (
     <div
@@ -524,7 +905,7 @@ export default function OmegleChat({ open, onClose }: OmegleChatProps) {
               Omegle Live
             </h2>
             <p className="text-xs" style={{ color: "rgba(180,180,220,0.6)" }}>
-              Real-Time Video Chat with Strangers
+              Real-Time Video Chat
             </p>
           </div>
           <div
@@ -563,7 +944,7 @@ export default function OmegleChat({ open, onClose }: OmegleChatProps) {
               <button
                 type="button"
                 onClick={() => setMicOn((v) => !v)}
-                data-ocid="omegle.switch"
+                data-ocid="omegle.toggle"
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all hover:scale-105"
                 style={{
                   background: micOn
@@ -576,31 +957,36 @@ export default function OmegleChat({ open, onClose }: OmegleChatProps) {
                 {micOn ? <Mic size={13} /> : <MicOff size={13} />}
                 {micOn ? "Mic On" : "Mic Off"}
               </button>
+              {state === "connected" && (
+                <button
+                  type="button"
+                  onClick={() => setShowChat((v) => !v)}
+                  data-ocid="omegle.toggle"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all hover:scale-105"
+                  style={{
+                    background: showChat
+                      ? "rgba(99,102,241,0.3)"
+                      : "rgba(30,20,60,0.8)",
+                    border: "1px solid rgba(99,102,241,0.4)",
+                    color: "rgb(165,180,252)",
+                  }}
+                >
+                  <MessageSquare size={13} />
+                  Chat
+                </button>
+              )}
             </>
-          )}
-          {state === "connected" && (
-            <button
-              type="button"
-              onClick={() => setShowChat((v) => !v)}
-              data-ocid="omegle.secondary_button"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all hover:scale-105"
-              style={{
-                background: "rgba(99,102,241,0.2)",
-                border: "1px solid rgba(99,102,241,0.4)",
-                color: "rgb(165,180,252)",
-              }}
-            >
-              <MessageSquare size={13} />
-              Chat
-            </button>
           )}
           <button
             type="button"
-            onClick={onClose}
+            onClick={() => {
+              cleanup(true);
+              onClose();
+            }}
             data-ocid="omegle.close_button"
-            className="p-2 rounded-lg transition-all hover:scale-110"
+            className="p-2 rounded-xl transition-all hover:scale-105"
             style={{
-              background: "rgba(239,68,68,0.2)",
+              background: "rgba(239,68,68,0.15)",
               border: "1px solid rgba(239,68,68,0.3)",
               color: "rgb(252,165,165)",
             }}
@@ -610,61 +996,93 @@ export default function OmegleChat({ open, onClose }: OmegleChatProps) {
         </div>
       </div>
 
-      {/* Safe Chat Banner */}
+      {/* Safe Chat notice */}
       <div
-        className="flex items-center justify-center gap-2 px-4 py-1.5 flex-shrink-0 text-xs"
+        className="flex items-center gap-2 px-4 py-2 text-xs flex-shrink-0"
         style={{
-          background: "rgba(239,68,68,0.08)",
-          borderBottom: "1px solid rgba(239,68,68,0.15)",
-          color: "rgba(252,165,165,0.8)",
+          background: "rgba(34,197,94,0.08)",
+          borderBottom: "1px solid rgba(34,197,94,0.15)",
+          color: "rgba(134,239,172,0.8)",
         }}
       >
-        <Shield size={11} />
-        Safe Chat Policy — Nudity and harassment are strictly prohibited.
-        Violations will result in a ban.
+        <Shield size={12} />
+        <span>
+          Safe Chat Policy: No nudity, harassment, or illegal content.
+          Violations = instant ban.
+        </span>
       </div>
 
       {/* Body */}
-      <div className="flex-1 overflow-hidden relative flex">
+      <div className="flex-1 overflow-hidden flex flex-col relative">
         <AnimatePresence mode="wait">
-          {/* Idle / setup screen */}
+          {/* Idle / setup */}
           {state === "idle" && (
             <motion.div
               key="idle"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="flex-1 flex flex-col items-center justify-center gap-6 p-8"
+              exit={{ opacity: 0, y: -20 }}
+              className="flex-1 flex flex-col items-center justify-center gap-6 p-6"
             >
-              <motion.div
-                animate={{ scale: [1, 1.05, 1], rotate: [0, 5, -5, 0] }}
-                transition={{ repeat: Number.POSITIVE_INFINITY, duration: 4 }}
-                className="text-7xl"
-              >
-                🌍
-              </motion.div>
-              <div className="text-center">
-                <h3
-                  className="text-3xl font-bold mb-2"
-                  style={{
-                    background:
-                      "linear-gradient(90deg, #e879f9, #818cf8, #38bdf8)",
-                    WebkitBackgroundClip: "text",
-                    WebkitTextFillColor: "transparent",
-                  }}
-                >
-                  Meet Real People Worldwide
-                </h3>
-                <p
-                  className="text-sm"
-                  style={{ color: "rgba(180,180,220,0.7)" }}
-                >
-                  Live WebRTC video chat — face to face with real strangers
-                </p>
+              {/* Camera preview */}
+              <div className="relative">
+                {camReady ? (
+                  <>
+                    <video
+                      ref={localVideoRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      aria-label="Your camera preview"
+                      className="w-52 h-40 rounded-2xl object-cover"
+                      style={{
+                        border: "2px solid rgba(180,60,255,0.5)",
+                        boxShadow: "0 0 30px rgba(160,40,255,0.4)",
+                        transform: "scaleX(-1)",
+                      }}
+                    />
+                    <div
+                      className="absolute bottom-2 left-2 px-2 py-0.5 rounded-full text-xs font-semibold"
+                      style={{
+                        background: "rgba(34,197,94,0.85)",
+                        color: "white",
+                      }}
+                    >
+                      📷 Camera Ready
+                    </div>
+                  </>
+                ) : (
+                  <motion.div
+                    className="w-52 h-40 rounded-2xl flex flex-col items-center justify-center gap-2"
+                    style={{
+                      border: "2px dashed rgba(180,60,255,0.35)",
+                      background: "rgba(30,20,60,0.5)",
+                    }}
+                    animate={{ opacity: [0.5, 1, 0.5] }}
+                    transition={{
+                      repeat: Number.POSITIVE_INFINITY,
+                      duration: 2,
+                    }}
+                  >
+                    <div className="text-3xl">📷</div>
+                    <p
+                      className="text-xs"
+                      style={{ color: "rgba(180,140,255,0.7)" }}
+                    >
+                      Requesting camera...
+                    </p>
+                    <p
+                      className="text-xs"
+                      style={{ color: "rgba(140,120,200,0.5)" }}
+                    >
+                      Please allow access
+                    </p>
+                  </motion.div>
+                )}
               </div>
 
               {/* Filters */}
-              <div className="flex flex-wrap items-center justify-center gap-4">
+              <div className="flex flex-wrap gap-4 justify-center">
                 <div className="flex flex-col gap-1">
                   <label
                     htmlFor="omegle-country"
@@ -778,7 +1196,7 @@ export default function OmegleChat({ open, onClose }: OmegleChatProps) {
 
               <button
                 type="button"
-                onClick={requestMediaAndStart}
+                onClick={startSearch}
                 data-ocid="omegle.primary_button"
                 className="px-12 py-4 rounded-2xl text-lg font-bold transition-all hover:scale-105 active:scale-95"
                 style={{
@@ -794,7 +1212,7 @@ export default function OmegleChat({ open, onClose }: OmegleChatProps) {
               </button>
 
               <div
-                className="flex items-center gap-1 text-xs"
+                className="text-xs"
                 style={{ color: "rgba(150,150,180,0.6)" }}
               >
                 {flag} {userCountry} · Age {userAge}
@@ -802,40 +1220,7 @@ export default function OmegleChat({ open, onClose }: OmegleChatProps) {
             </motion.div>
           )}
 
-          {/* Requesting permission */}
-          {state === "requesting" && (
-            <motion.div
-              key="requesting"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="flex-1 flex flex-col items-center justify-center gap-4"
-              data-ocid="omegle.loading_state"
-            >
-              <motion.div
-                animate={{ rotate: 360 }}
-                transition={{
-                  repeat: Number.POSITIVE_INFINITY,
-                  duration: 1,
-                  ease: "linear",
-                }}
-                className="text-5xl"
-              >
-                📷
-              </motion.div>
-              <p
-                className="text-lg font-semibold"
-                style={{ color: "rgba(192,132,252,0.9)" }}
-              >
-                Requesting camera &amp; microphone...
-              </p>
-              <p className="text-sm" style={{ color: "rgba(150,150,180,0.6)" }}>
-                Please allow access when your browser asks
-              </p>
-            </motion.div>
-          )}
-
-          {/* Error state */}
+          {/* Error */}
           {state === "error" && (
             <motion.div
               key="error"
@@ -857,12 +1242,14 @@ export default function OmegleChat({ open, onClose }: OmegleChatProps) {
                   color: "rgba(252,165,165,0.9)",
                 }}
               >
-                <p className="font-semibold mb-2">To fix this in Chrome:</p>
+                <p className="font-semibold mb-2">
+                  To enable camera/mic in Chrome:
+                </p>
                 <ol className="list-decimal list-inside space-y-1 text-xs">
                   <li>Tap the 🔒 lock icon in the address bar</li>
                   <li>Set Camera to &quot;Allow&quot;</li>
                   <li>Set Microphone to &quot;Allow&quot;</li>
-                  <li>Refresh the page</li>
+                  <li>Tap Refresh button below</li>
                 </ol>
               </div>
               <div className="flex gap-3">
@@ -903,70 +1290,64 @@ export default function OmegleChat({ open, onClose }: OmegleChatProps) {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="flex-1 flex flex-col relative"
+              className="flex-1 flex flex-col items-center justify-center gap-6"
             >
-              {/* Local preview */}
-              <div className="flex-1 relative flex items-center justify-center">
-                <video
-                  ref={localVideoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  aria-label="Your camera preview"
-                  className="w-48 h-36 rounded-2xl object-cover"
+              <video
+                ref={localVideoRef}
+                autoPlay
+                playsInline
+                muted
+                aria-label="Your camera preview"
+                className="w-52 h-40 rounded-2xl object-cover"
+                style={{
+                  border: "2px solid rgba(180,60,255,0.5)",
+                  boxShadow: "0 0 20px rgba(160,40,255,0.3)",
+                  transform: "scaleX(-1)",
+                }}
+              />
+              <div className="flex flex-col items-center gap-3">
+                <motion.div className="flex gap-2">
+                  {[0, 1, 2].map((i) => (
+                    <motion.div
+                      key={i}
+                      className="w-3 h-3 rounded-full"
+                      style={{ background: "rgba(192,132,252,0.8)" }}
+                      animate={{ scale: [1, 1.4, 1], opacity: [0.5, 1, 0.5] }}
+                      transition={{
+                        repeat: Number.POSITIVE_INFINITY,
+                        duration: 1.2,
+                        delay: i * 0.4,
+                      }}
+                    />
+                  ))}
+                </motion.div>
+                <p
+                  className="text-base font-semibold"
+                  style={{ color: "rgba(192,132,252,0.9)" }}
+                >
+                  Searching for a stranger...
+                </p>
+                <p
+                  className="text-xs"
+                  style={{ color: "rgba(150,150,180,0.6)" }}
+                >
+                  {flag} {userCountry} · Age {userAge} · {searchSeconds}s
+                  elapsed
+                </p>
+                <button
+                  type="button"
+                  onClick={handleStop}
+                  data-ocid="omegle.cancel_button"
+                  className="mt-2 px-6 py-2 rounded-xl text-sm font-semibold transition-all hover:scale-105"
                   style={{
-                    border: "2px solid rgba(180,60,255,0.5)",
-                    boxShadow: "0 0 20px rgba(160,40,255,0.3)",
+                    background: "rgba(239,68,68,0.2)",
+                    border: "1px solid rgba(239,68,68,0.35)",
+                    color: "rgb(252,165,165)",
                   }}
-                />
-                <div className="absolute bottom-8 flex flex-col items-center gap-3">
-                  <motion.div
-                    className="flex gap-2"
-                    initial="start"
-                    animate="end"
-                    variants={{ start: {}, end: {} }}
-                  >
-                    {[0, 1, 2].map((i) => (
-                      <motion.div
-                        key={i}
-                        className="w-3 h-3 rounded-full"
-                        style={{ background: "rgba(192,132,252,0.8)" }}
-                        animate={{ scale: [1, 1.4, 1], opacity: [0.5, 1, 0.5] }}
-                        transition={{
-                          repeat: Number.POSITIVE_INFINITY,
-                          duration: 1.2,
-                          delay: i * 0.4,
-                        }}
-                      />
-                    ))}
-                  </motion.div>
-                  <p
-                    className="text-base font-semibold"
-                    style={{ color: "rgba(192,132,252,0.9)" }}
-                  >
-                    Searching for a stranger...
-                  </p>
-                  <p
-                    className="text-xs"
-                    style={{ color: "rgba(150,150,180,0.6)" }}
-                  >
-                    {flag} {userCountry} · Age {userAge}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={handleStop}
-                    data-ocid="omegle.cancel_button"
-                    className="mt-2 px-6 py-2 rounded-xl text-sm font-semibold transition-all hover:scale-105"
-                    style={{
-                      background: "rgba(239,68,68,0.2)",
-                      border: "1px solid rgba(239,68,68,0.35)",
-                      color: "rgb(252,165,165)",
-                    }}
-                  >
-                    <StopCircle size={14} className="inline mr-1" />
-                    Cancel
-                  </button>
-                </div>
+                >
+                  <StopCircle size={14} className="inline mr-1" />
+                  Cancel
+                </button>
               </div>
             </motion.div>
           )}
@@ -979,7 +1360,6 @@ export default function OmegleChat({ open, onClose }: OmegleChatProps) {
               animate={{ opacity: 1 }}
               className="flex-1 flex relative overflow-hidden"
             >
-              {/* Ripple on connect */}
               {ripple && (
                 <motion.div
                   className="absolute inset-0 z-10 pointer-events-none"
@@ -993,54 +1373,30 @@ export default function OmegleChat({ open, onClose }: OmegleChatProps) {
                 />
               )}
 
-              {/* Stranger video (full) */}
-              <div className="flex-1 relative">
+              {/* Remote video (full screen) */}
+              <div className="flex-1 relative bg-black">
+                {/* biome-ignore lint/a11y/useMediaCaption: live video stream, no captions available */}
                 <video
                   ref={remoteVideoRef}
                   autoPlay
                   playsInline
-                  aria-label="Stranger video"
                   className="w-full h-full object-cover"
-                  style={{ borderRadius: 0 }}
-                >
-                  <track kind="captions" />
-                </video>
-                {/* Neon border pulse */}
-                <motion.div
-                  className="absolute inset-0 pointer-events-none rounded-none"
-                  animate={{ opacity: [0.4, 0.8, 0.4] }}
-                  transition={{
-                    repeat: Number.POSITIVE_INFINITY,
-                    duration: 2.5,
-                  }}
-                  style={{
-                    boxShadow: "inset 0 0 30px rgba(180,60,255,0.25)",
-                    border: "2px solid rgba(180,60,255,0.35)",
-                  }}
                 />
-                {/* Stranger info badge */}
+                {/* Stranger info overlay */}
                 {strangerInfo && (
                   <div
-                    className="absolute top-4 left-4 flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-semibold"
+                    className="absolute top-3 left-3 flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-semibold"
                     style={{
-                      background: "rgba(0,0,0,0.6)",
+                      background: "rgba(10,5,25,0.85)",
                       border: "1px solid rgba(180,60,255,0.4)",
-                      color: "white",
+                      color: "rgba(220,200,255,0.9)",
                       backdropFilter: "blur(8px)",
                     }}
                   >
-                    <span>{COUNTRY_FLAGS[strangerInfo.country] ?? "🌍"}</span>
+                    <span>{strangerFlag}</span>
                     <span>{strangerInfo.country}</span>
-                    <span
-                      className="px-2 py-0.5 rounded-full text-xs"
-                      style={{
-                        background: "rgba(192,132,252,0.3)",
-                        color: "#e9d5ff",
-                      }}
-                    >
-                      Age {strangerInfo.age}
-                    </span>
-                    <Globe size={12} style={{ opacity: 0.7 }} />
+                    <span style={{ color: "rgba(180,140,255,0.7)" }}>·</span>
+                    <span>Age {strangerInfo.age}</span>
                   </div>
                 )}
                 {/* Action buttons */}
@@ -1048,151 +1404,40 @@ export default function OmegleChat({ open, onClose }: OmegleChatProps) {
                   <button
                     type="button"
                     onClick={handleNext}
-                    data-ocid="omegle.primary_button"
-                    className="flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold text-sm transition-all hover:scale-105 active:scale-95"
+                    data-ocid="omegle.secondary_button"
+                    className="flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm transition-all hover:scale-105"
                     style={{
-                      background:
-                        "linear-gradient(135deg, rgba(99,102,241,0.8), rgba(180,60,255,0.8))",
-                      border: "1px solid rgba(180,60,255,0.4)",
+                      background: "rgba(99,102,241,0.85)",
+                      border: "1px solid rgba(129,140,248,0.5)",
                       color: "white",
-                      boxShadow: "0 4px 20px rgba(160,40,255,0.4)",
+                      backdropFilter: "blur(8px)",
                     }}
                   >
-                    <RotateCcw size={15} />
-                    Next
-                    <ChevronRight size={15} />
+                    <RotateCcw size={14} /> Next
                   </button>
                   <button
                     type="button"
                     onClick={handleStop}
-                    data-ocid="omegle.delete_button"
-                    className="flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-sm transition-all hover:scale-105"
+                    data-ocid="omegle.cancel_button"
+                    className="flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm transition-all hover:scale-105"
                     style={{
-                      background: "rgba(239,68,68,0.3)",
-                      border: "1px solid rgba(239,68,68,0.4)",
-                      color: "rgb(252,165,165)",
+                      background: "rgba(239,68,68,0.85)",
+                      border: "1px solid rgba(252,165,165,0.4)",
+                      color: "white",
+                      backdropFilter: "blur(8px)",
                     }}
                   >
-                    <StopCircle size={15} />
-                    Stop
+                    <StopCircle size={14} /> Stop
                   </button>
                 </div>
               </div>
 
-              {/* Chat panel */}
-              {showChat && (
-                <motion.div
-                  initial={{ x: 300 }}
-                  animate={{ x: 0 }}
-                  exit={{ x: 300 }}
-                  className="w-72 flex flex-col flex-shrink-0"
-                  style={{
-                    background: "rgba(10,5,25,0.95)",
-                    borderLeft: "1px solid rgba(180,60,255,0.2)",
-                  }}
-                >
-                  <div
-                    className="flex items-center gap-2 px-4 py-3 flex-shrink-0"
-                    style={{ borderBottom: "1px solid rgba(180,60,255,0.15)" }}
-                  >
-                    <MessageSquare
-                      size={14}
-                      style={{ color: "rgba(192,132,252,0.8)" }}
-                    />
-                    <span
-                      className="text-sm font-semibold"
-                      style={{ color: "rgba(220,200,255,0.9)" }}
-                    >
-                      Live Chat
-                    </span>
-                    <span
-                      className="ml-auto text-xs"
-                      style={{ color: "rgba(150,150,180,0.6)" }}
-                    >
-                      {LANGUAGES.find((l) => l.code === language)?.name ??
-                        "English"}
-                    </span>
-                  </div>
-                  <div className="flex-1 overflow-y-auto p-3 space-y-2">
-                    {messages.length === 0 && (
-                      <div
-                        className="text-center text-xs py-8"
-                        style={{ color: "rgba(150,150,180,0.5)" }}
-                      >
-                        No messages yet. Say hi! 👋
-                      </div>
-                    )}
-                    {messages.map((msg) => (
-                      <div
-                        key={msg.id}
-                        className={`flex ${msg.from === "me" ? "justify-end" : "justify-start"}`}
-                      >
-                        <div
-                          className="max-w-[80%] px-3 py-1.5 rounded-xl text-sm"
-                          style={{
-                            background:
-                              msg.from === "me"
-                                ? "rgba(99,102,241,0.4)"
-                                : "rgba(255,255,255,0.08)",
-                            color:
-                              msg.from === "me"
-                                ? "rgb(199,210,254)"
-                                : "rgba(220,220,240,0.9)",
-                            borderRadius:
-                              msg.from === "me"
-                                ? "12px 12px 2px 12px"
-                                : "12px 12px 12px 2px",
-                          }}
-                        >
-                          {msg.text}
-                        </div>
-                      </div>
-                    ))}
-                    <div ref={messagesEndRef} />
-                  </div>
-                  <div
-                    className="p-3 flex-shrink-0"
-                    style={{ borderTop: "1px solid rgba(180,60,255,0.15)" }}
-                  >
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        value={chatInput}
-                        onChange={(e) => setChatInput(e.target.value)}
-                        onKeyDown={(e) => e.key === "Enter" && sendMessage()}
-                        placeholder="Type a message..."
-                        data-ocid="omegle.input"
-                        className="flex-1 px-3 py-2 rounded-lg text-sm outline-none"
-                        style={{
-                          background: "rgba(30,20,60,0.8)",
-                          border: "1px solid rgba(180,60,255,0.25)",
-                          color: "rgba(220,200,255,0.9)",
-                        }}
-                      />
-                      <button
-                        type="button"
-                        onClick={sendMessage}
-                        data-ocid="omegle.submit_button"
-                        className="px-3 py-2 rounded-lg text-sm font-semibold transition-all hover:scale-105"
-                        style={{
-                          background: "rgba(99,102,241,0.4)",
-                          border: "1px solid rgba(99,102,241,0.4)",
-                          color: "white",
-                        }}
-                      >
-                        Send
-                      </button>
-                    </div>
-                  </div>
-                </motion.div>
-              )}
-
-              {/* Local preview (PiP) */}
+              {/* Local picture-in-picture */}
               <div
-                className="absolute bottom-20 right-4 w-32 h-24 rounded-xl overflow-hidden z-20"
+                className="absolute top-3 right-3 w-32 h-24 rounded-xl overflow-hidden z-20"
                 style={{
-                  border: "2px solid rgba(192,132,252,0.5)",
-                  boxShadow: "0 0 15px rgba(160,40,255,0.4)",
+                  border: "2px solid rgba(180,60,255,0.5)",
+                  boxShadow: "0 4px 15px rgba(0,0,0,0.5)",
                 }}
               >
                 <video
@@ -1200,15 +1445,90 @@ export default function OmegleChat({ open, onClose }: OmegleChatProps) {
                   autoPlay
                   playsInline
                   muted
+                  aria-label="Your camera"
                   className="w-full h-full object-cover"
+                  style={{ transform: "scaleX(-1)" }}
                 />
-                <div
-                  className="absolute bottom-1 left-1 text-[9px] px-1.5 py-0.5 rounded-full"
-                  style={{ background: "rgba(0,0,0,0.6)", color: "white" }}
-                >
-                  {flag} You
-                </div>
               </div>
+
+              {/* Text chat panel */}
+              {showChat && (
+                <motion.div
+                  initial={{ x: "100%" }}
+                  animate={{ x: 0 }}
+                  exit={{ x: "100%" }}
+                  className="w-72 flex flex-col flex-shrink-0"
+                  style={{
+                    background: "rgba(10,5,25,0.97)",
+                    borderLeft: "1px solid rgba(180,60,255,0.25)",
+                  }}
+                >
+                  <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                    {messages.map((msg) => (
+                      <div
+                        key={msg.id}
+                        className={`text-xs px-3 py-2 rounded-xl max-w-[90%] ${
+                          msg.from === "me"
+                            ? "ml-auto"
+                            : msg.from === "system"
+                              ? "mx-auto text-center"
+                              : ""
+                        }`}
+                        style={{
+                          background:
+                            msg.from === "me"
+                              ? "rgba(99,102,241,0.4)"
+                              : msg.from === "system"
+                                ? "rgba(30,20,60,0.7)"
+                                : "rgba(50,30,80,0.7)",
+                          color:
+                            msg.from === "system"
+                              ? "rgba(180,160,220,0.7)"
+                              : "rgba(220,200,255,0.9)",
+                          border:
+                            msg.from === "system"
+                              ? "none"
+                              : "1px solid rgba(180,60,255,0.2)",
+                        }}
+                      >
+                        {msg.text}
+                      </div>
+                    ))}
+                    <div ref={messagesEndRef} />
+                  </div>
+                  <div
+                    className="flex gap-2 p-3"
+                    style={{ borderTop: "1px solid rgba(180,60,255,0.2)" }}
+                  >
+                    <input
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && sendChatMessage()}
+                      placeholder="Type a message..."
+                      data-ocid="omegle.input"
+                      className="flex-1 px-3 py-2 rounded-lg text-xs outline-none"
+                      style={{
+                        background: "rgba(30,20,60,0.9)",
+                        border: "1px solid rgba(180,60,255,0.3)",
+                        color: "rgba(220,200,255,0.9)",
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={sendChatMessage}
+                      data-ocid="omegle.submit_button"
+                      className="px-3 py-2 rounded-lg text-xs font-semibold transition-all hover:scale-105"
+                      style={{
+                        background: "rgba(99,102,241,0.5)",
+                        border: "1px solid rgba(99,102,241,0.4)",
+                        color: "white",
+                      }}
+                    >
+                      Send
+                    </button>
+                  </div>
+                </motion.div>
+              )}
             </motion.div>
           )}
         </AnimatePresence>

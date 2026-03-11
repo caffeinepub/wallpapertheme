@@ -2,6 +2,7 @@ import Map "mo:core/Map";
 import Iter "mo:core/Iter";
 import Runtime "mo:core/Runtime";
 import Principal "mo:core/Principal";
+import Nat "mo:core/Nat";
 
 import Storage "blob-storage/Storage";
 import Array "mo:core/Array";
@@ -117,17 +118,6 @@ actor {
 
   let images = Map.empty<Nat, ImageStored>();
 
-  func createImage(id : Nat, blob : Storage.ExternalBlob, owner : Principal) : ImageStored {
-    {
-      id;
-      blob;
-      owner;
-      title = "unknown";
-      description = "unknown";
-      createdTimestamp = id;
-    };
-  };
-
   public query ({ caller }) func getImagesForUser(user : Principal) : async [ImageStored] {
     let filtered = images.filter(
       func(_id, storedImage) {
@@ -149,7 +139,7 @@ actor {
 
   public type SignalMessage = {
     from : Text;
-    msgType : Text; // "offer", "answer", "ice"
+    msgType : Text;
     data : Text;
   };
 
@@ -160,33 +150,46 @@ actor {
     isInitiator : Bool;
   };
 
-  // waiting queue: sessionId -> (principalText, country, age)
+  // waiting queue: sessionId -> (country, age)
+  // NOTE: We do NOT filter by principal — anonymous users all share the same
+  // principal so filtering would prevent any two users from ever matching.
+  // (principalText, country, age) -- keep 3-tuple for stable variable compatibility
   let waitingQueue = Map.empty<Text, (Text, Text, Nat)>();
   let matchedPairs = Map.empty<Text, Text>(); // sessionId -> peerSessionId
   let signalStore = Map.empty<Text, [SignalMessage]>(); // sessionId -> pending messages
+  let sessionInfo = Map.empty<Text, (Text, Nat)>(); // sessionId -> (country, age)
 
   var sessionCounter : Nat = 0;
 
-  // Join the queue; returns a sessionId
+  // Join the queue; returns a unique sessionId
   public shared ({ caller }) func joinOmegleQueue(country : Text, age : Nat) : async Text {
     sessionCounter += 1;
-    let sid = "s" # Nat.toText(sessionCounter);
+    let sid = "s" # sessionCounter.toText();
+
+    // Store this session's metadata
+    sessionInfo.add(sid, (country, age));
+
+    // Look for ANY waiting session (no principal filter — works for anonymous users)
     var matchedWith : ?Text = null;
-    label outer for ((wsid, (wprinc, _wcountry, _wage)) in waitingQueue.entries()) {
-      if (wprinc != caller.toText()) {
+    label outer for ((wsid, (_wprinc, _wcountry, _wage)) in waitingQueue.entries()) {
+      // Don't match a session with itself (safety check)
+      if (wsid != sid) {
         matchedWith := ?wsid;
         break outer;
       };
     };
+
     switch (matchedWith) {
       case (?wsid) {
-        ignore waitingQueue.remove(wsid);
+        // Remove the waiting session and pair them
+        waitingQueue.remove(wsid);
         matchedPairs.add(sid, wsid);
         matchedPairs.add(wsid, sid);
         signalStore.add(sid, []);
         signalStore.add(wsid, []);
       };
       case (null) {
+        // No one waiting — add ourselves to the queue
         waitingQueue.add(sid, (caller.toText(), country, age));
       };
     };
@@ -199,10 +202,14 @@ actor {
       case (null) { null };
       case (?peerSid) {
         let isInit = sid < peerSid;
+        let (peerCountry, peerAge) = switch (sessionInfo.get(peerSid)) {
+          case (null) { ("Unknown", 20) };
+          case (?info) { info };
+        };
         ?{
           peerId = peerSid;
-          peerCountry = "Unknown";
-          peerAge = 20;
+          peerCountry;
+          peerAge;
           isInitiator = isInit;
         };
       };
@@ -237,19 +244,22 @@ actor {
 
   // Leave / disconnect
   public shared ({ caller }) func leaveOmegleQueue(sid : Text) : async () {
-    ignore waitingQueue.remove(sid);
+    waitingQueue.remove(sid);
+    sessionInfo.remove(sid);
     switch (matchedPairs.get(sid)) {
       case (null) {};
       case (?peerSid) {
-        ignore matchedPairs.remove(sid);
-        ignore matchedPairs.remove(peerSid);
-        ignore signalStore.remove(sid);
-        ignore signalStore.remove(peerSid);
+        matchedPairs.remove(sid);
+        matchedPairs.remove(peerSid);
+        signalStore.remove(sid);
+        // Notify peer by sending a "disconnect" signal
+        let msg : SignalMessage = { from = sid; msgType = "disconnect"; data = "" };
+        signalStore.add(peerSid, [msg]);
       };
     };
   };
 
   public query func getOmegleActiveCount() : async Nat {
-    waitingQueue.size() + matchedPairs.size();
+    waitingQueue.size() + matchedPairs.size() / 2;
   };
 };

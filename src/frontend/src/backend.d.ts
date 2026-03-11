@@ -40,6 +40,17 @@ export enum UserRole {
     user = "user",
     guest = "guest"
 }
+export interface SignalMessage {
+    from: string;
+    msgType: string;
+    data: string;
+}
+export interface MatchInfo {
+    peerId: string;
+    peerCountry: string;
+    peerAge: bigint;
+    isInitiator: boolean;
+}
 export interface backendInterface {
     assignCallerUserRole(user: Principal, role: UserRole): Promise<void>;
     getAllImages(): Promise<Array<ImageStored>>;
@@ -52,4 +63,10 @@ export interface backendInterface {
     isCallerAdmin(): Promise<boolean>;
     saveCallerUserProfile(profile: UserProfile): Promise<void>;
     saveUserProfileFrontend(profile: UserProfileForFrontend): Promise<void>;
+    joinOmegleQueue(country: string, age: bigint): Promise<string>;
+    pollOmegleMatch(sid: string): Promise<MatchInfo | null>;
+    sendOmegleSignal(sid: string, msgType: string, data: string): Promise<void>;
+    getOmegleSignals(sid: string): Promise<Array<SignalMessage>>;
+    leaveOmegleQueue(sid: string): Promise<void>;
+    getOmegleActiveCount(): Promise<bigint>;
 }

@@ -546,110 +546,96 @@ export default function TicTacToe3D({ open, onClose }: TicTacToe3DProps) {
                   )}
                 </div>
 
-                {/* 3D Board */}
+                {/* Board */}
                 <div
+                  className="grid grid-cols-3 gap-2 p-3 rounded-2xl"
                   style={{
-                    perspective: "600px",
-                    perspectiveOrigin: "50% 30%",
+                    background: "rgba(80,40,160,0.15)",
+                    border: "1px solid rgba(160,80,255,0.3)",
+                    boxShadow:
+                      "0 20px 60px rgba(100,40,200,0.3), inset 0 1px 0 rgba(255,255,255,0.05)",
                   }}
                 >
-                  <div
-                    style={{
-                      transform: "rotateX(20deg)",
-                      transformStyle: "preserve-3d",
-                    }}
-                  >
-                    <div
-                      className="grid grid-cols-3 gap-2 p-3 rounded-2xl"
-                      style={{
-                        background: "rgba(80,40,160,0.15)",
-                        border: "1px solid rgba(160,80,255,0.3)",
-                        boxShadow:
-                          "0 20px 60px rgba(100,40,200,0.3), inset 0 1px 0 rgba(255,255,255,0.05)",
-                      }}
-                    >
-                      {board.map((cell, idx) => {
-                        const isWinCell = winResult?.line.includes(idx);
-                        const ocid = CELL_OCIDS[idx];
-                        const isClickable =
-                          !cell &&
-                          !gameOver &&
-                          !thinking &&
-                          !(mode === "computer" && currentTurn === "O");
-                        return (
-                          <motion.button
-                            key={ocid}
-                            type="button"
-                            data-ocid={ocid}
-                            onClick={() => handleCellClick(idx)}
-                            disabled={!isClickable}
-                            className="w-20 h-20 rounded-xl flex items-center justify-center relative overflow-hidden"
-                            style={{
-                              background: isWinCell
-                                ? "rgba(255,200,50,0.2)"
-                                : cell
-                                  ? "rgba(60,30,120,0.6)"
-                                  : "rgba(40,20,80,0.5)",
-                              border: isWinCell
-                                ? "2px solid rgba(255,200,50,0.7)"
-                                : "1px solid rgba(160,80,255,0.25)",
-                              boxShadow: isWinCell
-                                ? "0 0 20px rgba(255,200,50,0.4), inset 0 0 10px rgba(255,200,50,0.1)"
-                                : cell
-                                  ? "0 4px 15px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.07)"
-                                  : "0 6px 20px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05)",
-                              cursor: isClickable ? "pointer" : "default",
-                            }}
-                            whileHover={
-                              isClickable
-                                ? {
-                                    scale: 1.08,
-                                    translateY: -4,
-                                    boxShadow:
-                                      "0 12px 30px rgba(160,80,255,0.4), inset 0 1px 0 rgba(255,255,255,0.1)",
-                                  }
-                                : {}
-                            }
-                            whileTap={isClickable ? { scale: 0.95 } : {}}
+                  {board.map((cell, idx) => {
+                    const isWinCell = winResult?.line.includes(idx);
+                    const ocid = CELL_OCIDS[idx];
+                    const isClickable =
+                      !cell &&
+                      !gameOver &&
+                      !thinking &&
+                      !(mode === "computer" && currentTurn === "O");
+                    return (
+                      <motion.button
+                        key={ocid}
+                        type="button"
+                        data-ocid={ocid}
+                        onClick={() => handleCellClick(idx)}
+                        disabled={!isClickable}
+                        className="w-20 h-20 rounded-xl flex items-center justify-center relative overflow-hidden"
+                        style={{
+                          background: isWinCell
+                            ? "rgba(255,200,50,0.2)"
+                            : cell
+                              ? "rgba(60,30,120,0.6)"
+                              : "rgba(40,20,80,0.5)",
+                          border: isWinCell
+                            ? "2px solid rgba(255,200,50,0.7)"
+                            : "1px solid rgba(160,80,255,0.25)",
+                          boxShadow: isWinCell
+                            ? "0 0 20px rgba(255,200,50,0.4), inset 0 0 10px rgba(255,200,50,0.1)"
+                            : cell
+                              ? "0 4px 15px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.07)"
+                              : "0 6px 20px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05)",
+                          cursor: isClickable ? "pointer" : "default",
+                        }}
+                        whileHover={
+                          isClickable
+                            ? {
+                                scale: 1.08,
+                                translateY: -4,
+                                boxShadow:
+                                  "0 12px 30px rgba(160,80,255,0.4), inset 0 1px 0 rgba(255,255,255,0.1)",
+                              }
+                            : {}
+                        }
+                        whileTap={isClickable ? { scale: 0.95 } : {}}
+                      >
+                        {cell === "X" && (
+                          <motion.div
+                            className="relative w-12 h-12"
+                            initial={{ scale: 0, rotate: -45 }}
+                            animate={{ scale: 1, rotate: 0 }}
                           >
-                            {cell === "X" && (
-                              <motion.div
-                                className="relative w-12 h-12"
-                                initial={{ scale: 0, rotate: -45 }}
-                                animate={{ scale: 1, rotate: 0 }}
-                              >
-                                <div
-                                  className="absolute inset-0 flex items-center justify-center"
-                                  style={{
-                                    fontSize: "2.5rem",
-                                    fontWeight: 900,
-                                    color: "#ef4444",
-                                    textShadow:
-                                      "0 0 15px #ef4444, 0 0 30px rgba(239,68,68,0.5)",
-                                    lineHeight: 1,
-                                  }}
-                                >
-                                  ✕
-                                </div>
-                              </motion.div>
-                            )}
-                            {cell === "O" && (
-                              <motion.div
-                                className="w-10 h-10 rounded-full"
-                                style={{
-                                  border: "3px solid #60a5fa",
-                                  boxShadow:
-                                    "0 0 15px #60a5fa, 0 0 30px rgba(96,165,250,0.4), inset 0 0 10px rgba(96,165,250,0.1)",
-                                }}
-                                initial={{ scale: 0 }}
-                                animate={{ scale: 1 }}
-                              />
-                            )}
-                          </motion.button>
-                        );
-                      })}
-                    </div>
-                  </div>
+                            <div
+                              className="absolute inset-0 flex items-center justify-center"
+                              style={{
+                                fontSize: "2.5rem",
+                                fontWeight: 900,
+                                color: "#ef4444",
+                                textShadow:
+                                  "0 0 15px #ef4444, 0 0 30px rgba(239,68,68,0.5)",
+                                lineHeight: 1,
+                              }}
+                            >
+                              ✕
+                            </div>
+                          </motion.div>
+                        )}
+                        {cell === "O" && (
+                          <motion.div
+                            className="w-10 h-10 rounded-full"
+                            style={{
+                              border: "3px solid #60a5fa",
+                              boxShadow:
+                                "0 0 15px #60a5fa, 0 0 30px rgba(96,165,250,0.4), inset 0 0 10px rgba(96,165,250,0.1)",
+                            }}
+                            initial={{ scale: 0 }}
+                            animate={{ scale: 1 }}
+                          />
+                        )}
+                      </motion.button>
+                    );
+                  })}
                 </div>
 
                 {/* Play Again */}
