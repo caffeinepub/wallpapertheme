@@ -1,49 +1,28 @@
-import { OrbitControls } from "@react-three/drei";
-import { Canvas, useFrame } from "@react-three/fiber";
-import { AnimatePresence, motion } from "motion/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import * as THREE from "three";
-import { getAvatarColor, getInitials, useReckon } from "../App";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useReckon } from "../App";
 
 interface LudoGameProps {
   open: boolean;
   onClose: () => void;
 }
 
-const PLAYER_COLORS = [
-  {
-    name: "Red",
-    bg: "#ef4444",
-    light: "#fca5a5",
-    home: [-4.5, 0.35, -4.5] as [number, number, number],
-  },
-  {
-    name: "Blue",
-    bg: "#3b82f6",
-    light: "#93c5fd",
-    home: [4.5, 0.35, -4.5] as [number, number, number],
-  },
-  {
-    name: "Green",
-    bg: "#22c55e",
-    light: "#86efac",
-    home: [4.5, 0.35, 4.5] as [number, number, number],
-  },
-  {
-    name: "Yellow",
-    bg: "#eab308",
-    light: "#fde047",
-    home: [-4.5, 0.35, 4.5] as [number, number, number],
-  },
+// ─── Constants ───────────────────────────────────────────────────────────────
+const COLS = 15;
+const PLAYER_COLORS = ["#FF3B5C", "#00E676", "#FFD600", "#2979FF"];
+const PLAYER_LIGHT = ["#ffcdd2", "#c8e6c9", "#fff9c4", "#bbdefb"];
+const PLAYER_NAMES = ["Red", "Green", "Yellow", "Blue"];
+const TOKENS_PER_PLAYER = 4;
+
+// Home base squares (top-left corner of each 6x6 zone)
+const HOME_ZONES: [number, number][] = [
+  [0, 0],
+  [0, 9],
+  [9, 9],
+  [9, 0],
 ];
 
-// Each player enters the board at these absolute path indices
-const PLAYER_START = [0, 13, 26, 39];
-// Each player needs to travel 52 steps from their start to win
-const STEPS_TO_WIN = 52;
-
-// Full 52-cell path (shared clockwise track)
-const LUDO_PATH: [number, number][] = [
+// The 52-square main path (row, col)
+const MAIN_PATH: [number, number][] = [
   [6, 1],
   [6, 2],
   [6, 3],
@@ -98,1035 +77,1322 @@ const LUDO_PATH: [number, number][] = [
   [6, 0],
 ];
 
-// steps = steps taken from player's start (0 = not entered, 1..52)
-function stepsToPathIndex(steps: number, playerIdx: number): number {
-  return (PLAYER_START[playerIdx] + steps - 1) % 52;
+// Each player's home column (leading to center), 6 squares
+const HOME_COLS: [number, number][][] = [
+  [
+    [7, 1],
+    [7, 2],
+    [7, 3],
+    [7, 4],
+    [7, 5],
+    [7, 6],
+  ], // Red
+  [
+    [1, 7],
+    [2, 7],
+    [3, 7],
+    [4, 7],
+    [5, 7],
+    [6, 7],
+  ], // Green
+  [
+    [7, 13],
+    [7, 12],
+    [7, 11],
+    [7, 10],
+    [7, 9],
+    [7, 8],
+  ], // Yellow
+  [
+    [13, 7],
+    [12, 7],
+    [11, 7],
+    [10, 7],
+    [9, 7],
+    [8, 7],
+  ], // Blue
+];
+
+// Path index where each player starts (enters the board)
+const PLAYER_START_IDX = [0, 13, 26, 39];
+
+// Safe path indices (cannot capture here)
+const SAFE_PATH_IDXS = new Set([0, 8, 13, 21, 26, 34, 39, 47]);
+
+// Home token positions (2x2 grid inside home zone)
+const HOME_TOKEN_OFFSETS: [number, number][] = [
+  [1.5, 1.5],
+  [1.5, 3.5],
+  [3.5, 1.5],
+  [3.5, 3.5],
+];
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+interface Token {
+  player: number;
+  id: number;
+  pos: number; // -1 = home, 0..57 = path+homecol (0..51 = main, 52..57 = home col)
+  finished: boolean;
 }
 
-function stepsToWorld(
-  steps: number,
-  playerIdx: number,
-): [number, number, number] {
-  if (steps <= 0) return PLAYER_COLORS[playerIdx].home;
-  if (steps >= STEPS_TO_WIN) return [0, 1.4, 0];
-  const idx = stepsToPathIndex(steps, playerIdx);
-  const [row, col] = LUDO_PATH[idx];
-  return [col - 7, 0.35, row - 7];
+interface Anim {
+  tokenKey: string; // `${player}_${id}`
+  steps: [number, number][]; // list of [row,col] positions to visit
+  stepIdx: number;
+  progress: number; // 0..1 within current step
+  onDone: () => void;
 }
 
-// Board tile helpers
-const SAFE_PATH_INDICES = [0, 8, 13, 21, 26, 34, 39, 47];
-const SAFE_CELLS = new Set(
-  SAFE_PATH_INDICES.map((i) => `${LUDO_PATH[i][0]}-${LUDO_PATH[i][1]}`),
-);
-const PATH_CELLS = new Set(LUDO_PATH.map(([r, c]) => `${r}-${c}`));
-
-function getBoardTileColor(row: number, col: number): string {
-  if (row < 6 && col < 6) return "#ef4444";
-  if (row < 6 && col > 8) return "#3b82f6";
-  if (row > 8 && col < 6) return "#22c55e";
-  if (row > 8 && col > 8) return "#eab308";
-  if (row >= 6 && row <= 8 && col >= 6 && col <= 8) return "#a855f7";
-  const key = `${row}-${col}`;
-  if (SAFE_CELLS.has(key)) return "#fef08a";
-  if (PATH_CELLS.has(key)) return "#f0f0f0";
-  return "#cbd5e1";
+interface GameState {
+  tokens: Token[];
+  currentPlayer: number;
+  phase: "roll" | "move" | "wait";
+  diceValue: number | null;
+  winner: number | null;
+  message: string;
 }
 
-const BOARD_TILES: { row: number; col: number }[] = [];
-for (let r = 0; r < 15; r++)
-  for (let c = 0; c < 15; c++) BOARD_TILES.push({ row: r, col: c });
-
-// Audio
-function createBeep(ctx: AudioContext, freq: number, dur: number) {
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-  osc.connect(gain);
-  gain.connect(ctx.destination);
-  osc.frequency.value = freq;
-  osc.type = "square";
-  gain.gain.setValueAtTime(0.1, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
-  osc.start(ctx.currentTime);
-  osc.stop(ctx.currentTime + dur);
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function initTokens(): Token[] {
+  const tokens: Token[] = [];
+  for (let p = 0; p < 4; p++)
+    for (let i = 0; i < TOKENS_PER_PLAYER; i++)
+      tokens.push({ player: p, id: i, pos: -1, finished: false });
+  return tokens;
 }
 
-function createDotTexture(value: number): THREE.CanvasTexture {
-  const size = 128;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d")!;
-  ctx.fillStyle = "#f8f8ff";
-  ctx.roundRect(0, 0, size, size, 14);
+function getTokenPos(t: Token): [number, number] {
+  if (t.pos === -1) {
+    const [hr, hc] = HOME_ZONES[t.player];
+    const [dr, dc] = HOME_TOKEN_OFFSETS[t.id];
+    return [hr + dr, hc + dc];
+  }
+  if (t.finished) return [7, 7];
+  const absIdx = (PLAYER_START_IDX[t.player] + t.pos) % 52;
+  if (t.pos >= 52) {
+    const hci = t.pos - 52;
+    return HOME_COLS[t.player][Math.min(hci, 5)];
+  }
+  return MAIN_PATH[absIdx];
+}
+
+function canMove(t: Token, dice: number): boolean {
+  if (t.finished) return false;
+  if (t.pos === -1) return dice === 6;
+  const newPos = t.pos + dice;
+  if (newPos > 57) return false;
+  return true;
+}
+
+// ─── Drawing ─────────────────────────────────────────────────────────────────
+const CELL_COLORS: Record<string, string> = {};
+
+function buildCellColors() {
+  const pathSet = new Set(MAIN_PATH.map(([r, c]) => `${r},${c}`));
+  const safeSet = new Set<string>();
+  for (const i of SAFE_PATH_IDXS) {
+    const [r, c] = MAIN_PATH[i];
+    safeSet.add(`${r},${c}`);
+  }
+
+  for (let r = 0; r < COLS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const k = `${r},${c}`;
+      // Home zones
+      if (r < 6 && c < 6) {
+        CELL_COLORS[k] = "#ffcdd2";
+        continue;
+      }
+      if (r < 6 && c > 8) {
+        CELL_COLORS[k] = "#c8e6c9";
+        continue;
+      }
+      if (r > 8 && c > 8) {
+        CELL_COLORS[k] = "#fff9c4";
+        continue;
+      }
+      if (r > 8 && c < 6) {
+        CELL_COLORS[k] = "#bbdefb";
+        continue;
+      }
+      // Center
+      if (r >= 6 && r <= 8 && c >= 6 && c <= 8) {
+        CELL_COLORS[k] = "#f3f3f3";
+        continue;
+      }
+      // Home columns
+      const hcR = HOME_COLS[0].some(([hr, hc]) => hr === r && hc === c);
+      if (hcR) {
+        CELL_COLORS[k] = "#ef9a9a";
+        continue;
+      }
+      const hcG = HOME_COLS[1].some(([hr, hc]) => hr === r && hc === c);
+      if (hcG) {
+        CELL_COLORS[k] = "#a5d6a7";
+        continue;
+      }
+      const hcY = HOME_COLS[2].some(([hr, hc]) => hr === r && hc === c);
+      if (hcY) {
+        CELL_COLORS[k] = "#fff176";
+        continue;
+      }
+      const hcB = HOME_COLS[3].some(([hr, hc]) => hr === r && hc === c);
+      if (hcB) {
+        CELL_COLORS[k] = "#90caf9";
+        continue;
+      }
+      // Safe squares
+      if (safeSet.has(k)) {
+        CELL_COLORS[k] = "#e8f5e9";
+        continue;
+      }
+      // Path
+      if (pathSet.has(k)) {
+        CELL_COLORS[k] = "#ffffff";
+        continue;
+      }
+      CELL_COLORS[k] = "#eeeeee";
+    }
+  }
+}
+buildCellColors();
+
+function drawBoard(ctx: CanvasRenderingContext2D, sz: number) {
+  const cell = sz / COLS;
+
+  // Background
+  ctx.fillStyle = "#1a1a2e";
+  ctx.fillRect(0, 0, sz, sz);
+
+  // Grid cells
+  for (let r = 0; r < COLS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const col = CELL_COLORS[`${r},${c}`] ?? "#eee";
+      ctx.fillStyle = col;
+      ctx.fillRect(c * cell + 1, r * cell + 1, cell - 2, cell - 2);
+    }
+  }
+
+  // Home zone inner squares (colored circles)
+  const homeInner = [
+    { p: 0, r: 1, c: 1, w: 4, h: 4, color: PLAYER_COLORS[0] },
+    { p: 1, r: 1, c: 10, w: 4, h: 4, color: PLAYER_COLORS[1] },
+    { p: 2, r: 10, c: 10, w: 4, h: 4, color: PLAYER_COLORS[2] },
+    { p: 3, r: 10, c: 1, w: 4, h: 4, color: PLAYER_COLORS[3] },
+  ];
+  for (const { r, c, w, h, color } of homeInner) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.roundRect(c * cell + 4, r * cell + 4, w * cell - 8, h * cell - 8, 8);
+    ctx.fill();
+    // white inner circle
+    ctx.fillStyle = "rgba(255,255,255,0.18)";
+    ctx.beginPath();
+    ctx.roundRect(
+      c * cell + 12,
+      r * cell + 12,
+      w * cell - 24,
+      h * cell - 24,
+      6,
+    );
+    ctx.fill();
+  }
+
+  // Safe star markers
+  for (const i of SAFE_PATH_IDXS) {
+    const [sr, sc] = MAIN_PATH[i];
+    drawStar(
+      ctx,
+      sc * cell + cell / 2,
+      sr * cell + cell / 2,
+      cell * 0.28,
+      cell * 0.14,
+      5,
+    );
+  }
+
+  // Center arrows (triangles pointing to center)
+  const cx = 7.5 * cell;
+  const cy = 7.5 * cell;
+  const tr = cell * 1.2;
+  const arrows = [
+    { angle: 0, color: PLAYER_COLORS[0] }, // Red from left
+    { angle: 90, color: PLAYER_COLORS[1] }, // Green from top
+    { angle: 180, color: PLAYER_COLORS[2] }, // Yellow from right
+    { angle: 270, color: PLAYER_COLORS[3] }, // Blue from bottom
+  ];
+  for (const { angle, color } of arrows) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate((angle * Math.PI) / 180);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(0, -tr);
+    ctx.lineTo(tr * 0.6, 0);
+    ctx.lineTo(-tr * 0.6, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Grid lines
+  ctx.strokeStyle = "rgba(0,0,0,0.15)";
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i <= COLS; i++) {
+    ctx.beginPath();
+    ctx.moveTo(i * cell, 0);
+    ctx.lineTo(i * cell, sz);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, i * cell);
+    ctx.lineTo(sz, i * cell);
+    ctx.stroke();
+  }
+
+  // Border
+  ctx.strokeStyle = "#37474f";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(1, 1, sz - 2, sz - 2);
+}
+
+function drawStar(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  outerR: number,
+  innerR: number,
+  points: number,
+) {
+  ctx.save();
+  ctx.fillStyle = "rgba(255,200,0,0.7)";
+  ctx.beginPath();
+  for (let i = 0; i < points * 2; i++) {
+    const r = i % 2 === 0 ? outerR : innerR;
+    const a = (i * Math.PI) / points - Math.PI / 2;
+    i === 0
+      ? ctx.moveTo(cx + r * Math.cos(a), cy + r * Math.sin(a))
+      : ctx.lineTo(cx + r * Math.cos(a), cy + r * Math.sin(a));
+  }
+  ctx.closePath();
   ctx.fill();
-  ctx.fillStyle = "#1a0a2e";
+  ctx.restore();
+}
+
+function drawTokens(
+  ctx: CanvasRenderingContext2D,
+  sz: number,
+  tokens: Token[],
+  anim: Anim | null,
+  selected: string | null,
+  movable: string[],
+  pulse: number,
+) {
+  const cell = sz / COLS;
+  const r = cell * 0.38;
+
+  // Group tokens by cell to offset overlapping
+  const cellGroups: Record<string, Token[]> = {};
+  for (const t of tokens) {
+    if (t.finished) continue;
+    let animPos: [number, number] | null = null;
+    const key = `${t.player}_${t.id}`;
+    if (anim && anim.tokenKey === key) {
+      const cur = anim.steps[anim.stepIdx];
+      const nxt = anim.steps[anim.stepIdx + 1] ?? cur;
+      const pr = anim.progress;
+      animPos = [
+        cur[0] + (nxt[0] - cur[0]) * pr,
+        cur[1] + (nxt[1] - cur[1]) * pr,
+      ];
+    }
+    const [tr, tc] = animPos ?? getTokenPos(t);
+    const gk = `${Math.round(tr * 10) / 10},${Math.round(tc * 10) / 10}`;
+    if (!cellGroups[gk]) cellGroups[gk] = [];
+    cellGroups[gk].push(t);
+  }
+
+  for (const group of Object.values(cellGroups)) {
+    for (const [gi, t] of group.entries()) {
+      const key = `${t.player}_${t.id}`;
+      let animPos: [number, number] | null = null;
+      if (anim && anim.tokenKey === key) {
+        const cur = anim.steps[anim.stepIdx];
+        const nxt = anim.steps[anim.stepIdx + 1] ?? cur;
+        const pr = anim.progress;
+        animPos = [
+          cur[0] + (nxt[0] - cur[0]) * pr,
+          cur[1] + (nxt[1] - cur[1]) * pr,
+        ];
+      }
+      const [tr, tc] = animPos ?? getTokenPos(t);
+
+      const offsets = [
+        [-0.18, -0.18],
+        [0.18, -0.18],
+        [-0.18, 0.18],
+        [0.18, 0.18],
+      ];
+      const [or, oc] = group.length > 1 ? offsets[gi] : [0, 0];
+      const px = (tc + 0.5 + oc) * cell;
+      const py = (tr + 0.5 + or) * cell;
+      const baseR = group.length > 1 ? r * 0.72 : r;
+
+      const isMovable = movable.includes(key);
+      const isSel = selected === key;
+      const col = PLAYER_COLORS[t.player];
+
+      // Pulse scale for movable tokens
+      const pulseScale = isMovable
+        ? 1.0 + 0.15 * (0.5 + 0.5 * Math.sin(pulse * 4))
+        : 1.0;
+      const tokenR = baseR * pulseScale;
+
+      ctx.save();
+
+      // Drop shadow for all tokens
+      ctx.shadowBlur = 8;
+      ctx.shadowColor = "rgba(0,0,0,0.8)";
+
+      // Strong neon glow for movable tokens
+      if (isMovable) {
+        const glow = 0.5 + 0.5 * Math.sin(pulse * 4);
+        ctx.shadowColor = col;
+        ctx.shadowBlur = 25;
+        // Outer glow ring
+        ctx.beginPath();
+        ctx.arc(px, py, tokenR + 5 + glow * 3, 0, Math.PI * 2);
+        ctx.strokeStyle = `${col}b3`;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        ctx.shadowBlur = 25;
+        ctx.shadowColor = col;
+      }
+
+      // Selected outer yellow ring
+      if (isSel) {
+        ctx.beginPath();
+        ctx.arc(px, py, tokenR + 5, 0, Math.PI * 2);
+        ctx.strokeStyle = "#FFD700";
+        ctx.lineWidth = 4;
+        ctx.shadowColor = "#FFD700";
+        ctx.shadowBlur = 15;
+        ctx.stroke();
+      }
+
+      // 3D radial gradient fill
+      const grad = ctx.createRadialGradient(
+        px - tokenR * 0.3,
+        py - tokenR * 0.3,
+        tokenR * 0.05,
+        px,
+        py,
+        tokenR,
+      );
+      // Lighten color for highlight
+      grad.addColorStop(0, "rgba(255,255,255,0.9)");
+      grad.addColorStop(0.3, col);
+      grad.addColorStop(1, "rgba(0,0,0,0.6)");
+
+      ctx.beginPath();
+      ctx.arc(px, py, tokenR, 0, Math.PI * 2);
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      // White border (always thick)
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 3;
+      ctx.shadowBlur = 4;
+      ctx.shadowColor = "rgba(255,255,255,0.5)";
+      ctx.stroke();
+
+      // Player number inside token
+      const playerNum = t.player + 1;
+      const fontSize = Math.round(tokenR * 0.9);
+      ctx.font = `bold ${fontSize}px Arial`;
+      ctx.fillStyle = "white";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.shadowBlur = 3;
+      ctx.shadowColor = "rgba(0,0,0,0.9)";
+      ctx.fillText(String(playerNum), px, py + 1);
+
+      ctx.restore();
+    }
+  }
+}
+
+function drawDice(
+  ctx: CanvasRenderingContext2D,
+  value: number | null,
+  rolling: boolean,
+  x: number,
+  y: number,
+  sz: number,
+  canRoll: boolean,
+  pulse: number,
+) {
+  ctx.save();
+  const r = 10;
+  // Glow
+  if (canRoll) {
+    const g = 0.5 + 0.5 * Math.sin(pulse * 3);
+    ctx.shadowColor = "#a855f7";
+    ctx.shadowBlur = 15 + g * 10;
+  }
+  ctx.fillStyle = rolling ? "#ede9fe" : canRoll ? "#f5f3ff" : "#ccc";
+  ctx.beginPath();
+  ctx.roundRect(x, y, sz, sz, r);
+  ctx.fill();
+  ctx.strokeStyle = canRoll ? "#7c3aed" : "#999";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.restore();
+
+  if (value === null) {
+    ctx.fillStyle = "#999";
+    ctx.font = `bold ${sz * 0.4}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("?", x + sz / 2, y + sz / 2);
+    return;
+  }
+
+  const dotColor = "#1a0a2e";
+  const dot = (dx: number, dy: number) => {
+    ctx.beginPath();
+    ctx.arc(x + dx * sz, y + dy * sz, sz * 0.09, 0, Math.PI * 2);
+    ctx.fillStyle = dotColor;
+    ctx.fill();
+  };
+
   const layouts: [number, number][][] = [
     [[0.5, 0.5]],
     [
-      [0.27, 0.27],
-      [0.73, 0.73],
+      [0.28, 0.28],
+      [0.72, 0.72],
     ],
     [
-      [0.27, 0.27],
+      [0.28, 0.28],
       [0.5, 0.5],
-      [0.73, 0.73],
+      [0.72, 0.72],
     ],
     [
-      [0.27, 0.27],
-      [0.73, 0.27],
-      [0.27, 0.73],
-      [0.73, 0.73],
+      [0.28, 0.28],
+      [0.72, 0.28],
+      [0.28, 0.72],
+      [0.72, 0.72],
     ],
     [
-      [0.27, 0.27],
-      [0.73, 0.27],
+      [0.28, 0.28],
+      [0.72, 0.28],
       [0.5, 0.5],
-      [0.27, 0.73],
-      [0.73, 0.73],
+      [0.28, 0.72],
+      [0.72, 0.72],
     ],
     [
-      [0.27, 0.25],
-      [0.73, 0.25],
-      [0.27, 0.5],
-      [0.73, 0.5],
-      [0.27, 0.75],
-      [0.73, 0.75],
+      [0.28, 0.25],
+      [0.72, 0.25],
+      [0.28, 0.5],
+      [0.72, 0.5],
+      [0.28, 0.75],
+      [0.72, 0.75],
     ],
   ];
   for (const [dx, dy] of layouts[value - 1] ?? []) {
-    ctx.beginPath();
-    ctx.arc(dx * size, dy * size, size * 0.09, 0, Math.PI * 2);
-    ctx.fill();
+    dot(dx, dy);
   }
-  return new THREE.CanvasTexture(canvas);
-}
-
-// ─── 3D Components ────────────────────────────────────────────────────────────
-
-function BoardTile({
-  row,
-  col,
-  lit,
-}: { row: number; col: number; lit: boolean }) {
-  const ref = useRef<THREE.Mesh>(null);
-  const color = getBoardTileColor(row, col);
-  useFrame(() => {
-    if (!ref.current) return;
-    const mat = ref.current.material as THREE.MeshStandardMaterial;
-    mat.emissiveIntensity = lit
-      ? 0.3 + Math.sin(Date.now() * 0.006) * 0.15
-      : 0.04;
-  });
-  return (
-    <mesh ref={ref} position={[col - 7, 0, row - 7]} receiveShadow>
-      <boxGeometry args={[0.93, 0.15, 0.93]} />
-      <meshStandardMaterial
-        color={color}
-        emissive={color}
-        emissiveIntensity={0.04}
-        roughness={0.6}
-        metalness={0.1}
-      />
-    </mesh>
-  );
-}
-
-function Dice3D({
-  diceValue,
-  rolling,
-  canRoll,
-}: { diceValue: number | null; rolling: boolean; canRoll: boolean }) {
-  const meshRef = useRef<THREE.Mesh>(null);
-  const glowRef = useRef<THREE.Mesh>(null);
-  const spin = useRef({ active: false, speed: 0 });
-  const faceMats = useMemo(
-    () =>
-      [1, 2, 3, 4, 5, 6].map(
-        (n) =>
-          new THREE.MeshStandardMaterial({
-            map: createDotTexture(n),
-            roughness: 0.3,
-            metalness: 0.1,
-          }),
-      ),
-    [],
-  );
-
-  useEffect(() => {
-    if (rolling) spin.current = { active: true, speed: 20 };
-  }, [rolling]);
-  useEffect(() => {
-    if (meshRef.current) meshRef.current.material = faceMats;
-  }, [faceMats]);
-
-  useFrame((_, dt) => {
-    const m = meshRef.current;
-    if (!m) return;
-    if (spin.current.active) {
-      m.rotation.x += dt * spin.current.speed;
-      m.rotation.y += dt * spin.current.speed * 0.7;
-      spin.current.speed *= 0.95;
-      if (spin.current.speed < 0.4) {
-        spin.current.active = false;
-        if (diceValue !== null) {
-          const faceRots: [number, number, number][] = [
-            [0, 0, 0],
-            [0, Math.PI, 0],
-            [0, -Math.PI / 2, 0],
-            [0, Math.PI / 2, 0],
-            [-Math.PI / 2, 0, 0],
-            [Math.PI / 2, 0, 0],
-          ];
-          const [rx, ry, rz] = faceRots[diceValue - 1];
-          m.rotation.set(rx, ry, rz);
-        }
-      }
-    } else {
-      m.position.y = 1.5 + Math.sin(Date.now() * 0.002) * 0.08;
-    }
-    if (glowRef.current) {
-      glowRef.current.scale.setScalar(1 + Math.sin(Date.now() * 0.004) * 0.06);
-      (glowRef.current.material as THREE.MeshBasicMaterial).opacity = canRoll
-        ? 0.18 + Math.sin(Date.now() * 0.005) * 0.08
-        : 0.04;
-    }
-  });
-
-  return (
-    <group position={[5.5, 1.5, 0]}>
-      <mesh ref={glowRef}>
-        <sphereGeometry args={[1.15, 16, 16]} />
-        <meshBasicMaterial
-          color="#a855f7"
-          transparent
-          opacity={0.12}
-          side={THREE.BackSide}
-        />
-      </mesh>
-      <mesh ref={meshRef} castShadow>
-        <boxGeometry args={[1.2, 1.2, 1.2]} />
-      </mesh>
-    </group>
-  );
-}
-
-function Token3D({
-  steps,
-  playerIdx,
-  isCurrent,
-  isWinner,
-}: {
-  steps: number;
-  playerIdx: number;
-  isCurrent: boolean;
-  isWinner: boolean;
-}) {
-  const meshRef = useRef<THREE.Mesh>(null);
-  const cur = useRef(new THREE.Vector3(...stepsToWorld(steps, playerIdx)));
-  const tgt = useRef(new THREE.Vector3(...stepsToWorld(steps, playerIdx)));
-  const phase = useRef(0);
-
-  useEffect(() => {
-    const [tx, ty, tz] = stepsToWorld(steps, playerIdx);
-    tgt.current.set(tx, ty, tz);
-  }, [steps, playerIdx]);
-
-  useFrame((_, dt) => {
-    if (!meshRef.current) return;
-    cur.current.lerp(tgt.current, Math.min(dt * 7, 1));
-    phase.current += dt * (isWinner ? 2.5 : isCurrent ? 4 : 1);
-    const bobY = isWinner
-      ? Math.sin(phase.current) * 0.35 + 0.4
-      : isCurrent
-        ? Math.sin(phase.current) * 0.1
-        : 0;
-    meshRef.current.position.set(
-      cur.current.x,
-      cur.current.y + bobY,
-      cur.current.z,
-    );
-    if (isWinner) meshRef.current.rotation.y += dt * 3;
-  });
-
-  const col = PLAYER_COLORS[playerIdx];
-  return (
-    <mesh ref={meshRef} position={cur.current.toArray()} castShadow>
-      <cylinderGeometry args={[0.28, 0.32, 0.6, 16]} />
-      <meshStandardMaterial
-        color={col.bg}
-        emissive={col.bg}
-        emissiveIntensity={isWinner ? 2 : isCurrent ? 0.9 : 0.2}
-        roughness={0.3}
-        metalness={0.4}
-      />
-    </mesh>
-  );
-}
-
-function LudoScene({
-  steps,
-  numPlayers,
-  currentPlayer,
-  winner,
-  rolling,
-  diceValue,
-  canRoll,
-}: {
-  steps: number[];
-  numPlayers: number;
-  currentPlayer: number;
-  winner: number | null;
-  rolling: boolean;
-  diceValue: number | null;
-  canRoll: boolean;
-}) {
-  const litCells = useMemo(() => {
-    const s = new Set<string>();
-    for (let p = 0; p < numPlayers; p++) {
-      if (steps[p] > 0 && steps[p] < STEPS_TO_WIN) {
-        const idx = stepsToPathIndex(steps[p], p);
-        const [r, c] = LUDO_PATH[idx];
-        s.add(`${r}-${c}`);
-      }
-    }
-    return s;
-  }, [steps, numPlayers]);
-
-  const tokens = Array.from({ length: numPlayers }, (_, p) => (
-    <Token3D
-      key={PLAYER_COLORS[p].name}
-      steps={steps[p]}
-      playerIdx={p}
-      isCurrent={currentPlayer === p && winner === null}
-      isWinner={winner === p}
-    />
-  ));
-
-  return (
-    <>
-      <ambientLight intensity={0.45} />
-      <directionalLight position={[5, 10, 5]} intensity={1.2} castShadow />
-      <pointLight
-        position={[-7, 4, -7]}
-        color="#ef4444"
-        intensity={1.8}
-        distance={9}
-      />
-      <pointLight
-        position={[7, 4, -7]}
-        color="#3b82f6"
-        intensity={1.8}
-        distance={9}
-      />
-      <pointLight
-        position={[7, 4, 7]}
-        color="#22c55e"
-        intensity={1.8}
-        distance={9}
-      />
-      <pointLight
-        position={[-7, 4, 7]}
-        color="#eab308"
-        intensity={1.8}
-        distance={9}
-      />
-
-      {/* Platform */}
-      <mesh position={[0, -0.22, 0]} receiveShadow>
-        <boxGeometry args={[16.5, 0.3, 16.5]} />
-        <meshStandardMaterial color="#0a0318" roughness={0.8} metalness={0.3} />
-      </mesh>
-
-      {BOARD_TILES.map(({ row, col }) => (
-        <BoardTile
-          key={`${row}-${col}`}
-          row={row}
-          col={col}
-          lit={litCells.has(`${row}-${col}`)}
-        />
-      ))}
-
-      {tokens}
-
-      <Dice3D diceValue={diceValue} rolling={rolling} canRoll={canRoll} />
-
-      <OrbitControls
-        enableDamping
-        dampingFactor={0.05}
-        minPolarAngle={0.15}
-        maxPolarAngle={1.3}
-        autoRotate={!rolling && winner === null}
-        autoRotateSpeed={0.35}
-        enableZoom={false}
-      />
-    </>
-  );
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
-
-type GameMode = "players" | "computer" | null;
-
 export default function LudoGame({ open, onClose }: LudoGameProps) {
-  const { allUsers, currentUser } = useReckon();
-  const audioRef = useRef<AudioContext | null>(null);
-
-  const [gameMode, setGameMode] = useState<GameMode>(null);
-  const [gameStarted, setGameStarted] = useState(false);
+  const { currentUser } = useReckon();
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const stateRef = useRef<GameState>({
+    tokens: initTokens(),
+    currentPlayer: 0,
+    phase: "roll",
+    diceValue: null,
+    winner: null,
+    message: "Red's turn — Roll the dice!",
+  });
+  const animRef = useRef<Anim | null>(null);
+  const pulseRef = useRef(0);
+  const rafRef = useRef<number>(0);
+  const selectedRef = useRef<string | null>(null);
+  const movableRef = useRef<string[]>([]);
+  const confettiRef = useRef<
+    {
+      x: number;
+      y: number;
+      vx: number;
+      vy: number;
+      color: string;
+      life: number;
+    }[]
+  >([]);
+  const diceRollRef = useRef<{
+    frames: number;
+    left: number;
+    target: number;
+    onDone: (v: number) => void;
+  } | null>(null);
+  const diceDisplayRef = useRef<number | null>(null);
+  const soundOnRef = useRef(true);
+  const [, forceRender] = useState(0);
+  const rerender = () => forceRender((n) => n + 1);
   const [soundOn, setSoundOn] = useState(true);
-  const [currentPlayer, setCurrentPlayer] = useState(0);
-  const [diceValue, setDiceValue] = useState<number | null>(null);
-  const [rolling, setRolling] = useState(false);
-  const [winner, setWinner] = useState<number | null>(null);
-  const [computerThinking, setComputerThinking] = useState(false);
-  // steps[p] = number of steps taken from start (0 = home, 1..51 = on board, 52 = finished)
-  const [steps, setSteps] = useState<number[]>([0, 0, 0, 0]);
+  const [gameStarted, setGameStarted] = useState(false);
+  const audioCtxRef = useRef<AudioContext | null>(null);
 
-  // Refs to avoid stale closures in async callbacks
-  const winnerRef = useRef<number | null>(null);
-  const currentPlayerRef = useRef(0);
-  const stepsRef = useRef([0, 0, 0, 0]);
-  const rollingRef = useRef(false);
+  // Expose currentUser to satisfy the import (not used in game logic)
+  void currentUser;
 
-  useEffect(() => {
-    winnerRef.current = winner;
-  }, [winner]);
-  useEffect(() => {
-    currentPlayerRef.current = currentPlayer;
-  }, [currentPlayer]);
-  useEffect(() => {
-    stepsRef.current = steps;
-  }, [steps]);
-  useEffect(() => {
-    rollingRef.current = rolling;
-  }, [rolling]);
+  const playSound = useCallback((type: "roll" | "move" | "capture" | "win") => {
+    if (!soundOnRef.current) return;
+    try {
+      if (!audioCtxRef.current) audioCtxRef.current = new AudioContext();
+      const ctx = audioCtxRef.current;
+      const beep = (freq: number, dur: number, delay = 0) => {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.connect(g);
+        g.connect(ctx.destination);
+        osc.frequency.value = freq;
+        osc.type = "sine";
+        g.gain.setValueAtTime(0.12, ctx.currentTime + delay);
+        g.gain.exponentialRampToValueAtTime(
+          0.001,
+          ctx.currentTime + delay + dur,
+        );
+        osc.start(ctx.currentTime + delay);
+        osc.stop(ctx.currentTime + delay + dur);
+      };
+      if (type === "roll") {
+        beep(300, 0.08);
+        beep(400, 0.08, 0.1);
+        beep(500, 0.1, 0.2);
+      } else if (type === "move") {
+        beep(660, 0.1);
+      } else if (type === "capture") {
+        beep(220, 0.15);
+        beep(180, 0.2, 0.15);
+      } else if (type === "win") {
+        for (const [i, f] of [880, 1100, 1320, 1540].entries()) {
+          beep(f, 0.25, i * 0.2);
+        }
+      }
+    } catch {}
+  }, []);
 
-  const computerUser = useMemo(
-    () => ({
-      id: "computer_ai",
-      name: "Computer",
-      email: "",
-      phone: "",
-      password: "",
-      city: "AI",
-      createdAt: 0,
-    }),
+  const spawnConfetti = useCallback((cx: number, cy: number) => {
+    for (let i = 0; i < 60; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 2 + Math.random() * 4;
+      confettiRef.current.push({
+        x: cx,
+        y: cy,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 2,
+        color: PLAYER_COLORS[Math.floor(Math.random() * 4)],
+        life: 1,
+      });
+    }
+  }, []);
+
+  const getMovableTokens = useCallback(
+    (player: number, dice: number): Token[] => {
+      return stateRef.current.tokens.filter(
+        (t) => t.player === player && canMove(t, dice),
+      );
+    },
     [],
   );
 
-  const players = useMemo(
-    () =>
-      gameMode === "computer"
-        ? [currentUser, computerUser]
-        : [
-            currentUser,
-            ...allUsers.filter((u) => u.id !== currentUser.id).slice(0, 3),
-          ].slice(0, 4),
-    [gameMode, currentUser, allUsers, computerUser],
-  );
-
-  const numPlayers = gameMode === "computer" ? 2 : players.length;
-
-  const playSound = useCallback(
-    (type: "roll" | "move" | "win") => {
-      if (!soundOn) return;
-      if (!audioRef.current) audioRef.current = new AudioContext();
-      const ctx = audioRef.current;
-      if (type === "roll") {
-        createBeep(ctx, 440, 0.1);
-        setTimeout(() => createBeep(ctx, 550, 0.1), 100);
-      } else if (type === "move") {
-        createBeep(ctx, 660, 0.15);
-      } else {
-        createBeep(ctx, 880, 0.2);
-        setTimeout(() => createBeep(ctx, 1100, 0.2), 200);
-        setTimeout(() => createBeep(ctx, 1320, 0.3), 400);
-      }
+  const getMovableKeys = useCallback(
+    (player: number, dice: number): string[] => {
+      return getMovableTokens(player, dice).map((t) => `${t.player}_${t.id}`);
     },
-    [soundOn],
+    [getMovableTokens],
   );
 
-  // Core roll logic — returns true if player rolled 6 (extra turn)
-  const applyRoll = useCallback(
-    (playerIdx: number, rollVal: number): boolean => {
-      let gotWin = false;
-      let got6 = rollVal === 6;
+  const applyMove = useCallback(
+    (tokenKey: string, dice: number) => {
+      const gs = stateRef.current;
+      const [ps, is] = tokenKey.split("_").map(Number);
+      const token = gs.tokens.find((t) => t.player === ps && t.id === is);
+      if (!token) return;
 
-      setSteps((prev) => {
-        const next = [...prev];
-        const cur = next[playerIdx];
-        if (cur === 0) {
-          // Not on board — need 6 to enter
-          if (rollVal === 6) {
-            next[playerIdx] = 1; // enter board at step 1
-            playSound("move");
-          }
-          // If not 6, nothing happens, but player loses their turn
-        } else {
-          const newSteps = cur + rollVal;
-          if (newSteps >= STEPS_TO_WIN) {
-            next[playerIdx] = STEPS_TO_WIN;
-            gotWin = true;
-            setWinner(playerIdx);
-            winnerRef.current = playerIdx;
-            playSound("win");
-            got6 = false; // no extra turn needed if won
+      const steps = token.pos === -1 ? 1 : dice;
+      const newPos = token.pos === -1 ? 0 : token.pos + dice;
+
+      // Build animation path
+      const animPath: [number, number][] = [getTokenPos(token)];
+      if (token.pos === -1) {
+        animPath.push(MAIN_PATH[PLAYER_START_IDX[token.player]]);
+      } else {
+        for (let s = 1; s <= steps; s++) {
+          const p = token.pos + s;
+          const absIdx = (PLAYER_START_IDX[token.player] + p) % 52;
+          if (p >= 52) {
+            const hci = p - 52;
+            animPath.push(HOME_COLS[token.player][Math.min(hci, 5)]);
           } else {
-            next[playerIdx] = newSteps;
-            playSound("move");
+            animPath.push(MAIN_PATH[absIdx]);
           }
         }
-        stepsRef.current = next;
-        return next;
-      });
+      }
 
-      return got6 && !gotWin;
+      selectedRef.current = null;
+      movableRef.current = [];
+      gs.phase = "wait";
+
+      animRef.current = {
+        tokenKey,
+        steps: animPath,
+        stepIdx: 0,
+        progress: 0,
+        onDone: () => {
+          animRef.current = null;
+          const gs2 = stateRef.current;
+          // Update token position
+          token.pos = newPos;
+          if (newPos >= 57) {
+            token.finished = true;
+            token.pos = 57;
+          }
+
+          // Check for captures (only on main path, not home col, not safe)
+          let captured = false;
+          if (newPos < 52 && newPos >= 0 && !token.finished) {
+            const landAbsIdx = (PLAYER_START_IDX[token.player] + newPos) % 52;
+            const isSafe = SAFE_PATH_IDXS.has(landAbsIdx);
+            if (!isSafe) {
+              for (const other of gs2.tokens) {
+                if (
+                  other.player === token.player ||
+                  other.finished ||
+                  other.pos < 0
+                )
+                  continue;
+                if (other.pos >= 52) continue; // in home col
+                const otherAbsIdx =
+                  (PLAYER_START_IDX[other.player] + other.pos) % 52;
+                if (otherAbsIdx === landAbsIdx) {
+                  other.pos = -1; // send home
+                  captured = true;
+                  playSound("capture");
+                }
+              }
+            }
+          }
+
+          // Check win
+          const playerTokens = gs2.tokens.filter(
+            (t) => t.player === token.player,
+          );
+          const allFinished = playerTokens.every((t) => t.finished);
+          if (allFinished) {
+            gs2.winner = token.player;
+            gs2.phase = "wait";
+            gs2.message = `🏆 ${PLAYER_NAMES[token.player]} wins!`;
+            playSound("win");
+            const canvas = canvasRef.current;
+            if (canvas) spawnConfetti(canvas.width / 2, canvas.height / 2);
+            return;
+          }
+
+          // Extra turn on 6
+          if (dice === 6 && !captured) {
+            gs2.phase = "roll";
+            gs2.message = `${PLAYER_NAMES[token.player]} rolled 6 — roll again!`;
+            if (token.player !== 0) {
+              setTimeout(() => aiTurn(token.player), 900);
+            }
+          } else {
+            // Next player
+            const nextPlayer = (token.player + 1) % 4;
+            gs2.currentPlayer = nextPlayer;
+            gs2.diceValue = null;
+            gs2.phase = "roll";
+            gs2.message = `${PLAYER_NAMES[nextPlayer]}'s turn — Roll the dice!`;
+            if (nextPlayer !== 0) {
+              setTimeout(() => aiTurn(nextPlayer), 700);
+            }
+          }
+        },
+      };
+      playSound("move");
+    },
+    [playSound, spawnConfetti],
+  );
+
+  const rollDiceFor = useCallback(
+    (_player: number, onResult: (val: number) => void) => {
+      playSound("roll");
+      const target = Math.floor(Math.random() * 6) + 1;
+      diceRollRef.current = {
+        frames: 12,
+        left: 12,
+        target,
+        onDone: onResult,
+      };
     },
     [playSound],
   );
 
-  const doRollAnimation = useCallback(
-    (_count: number, onDone: (val: number) => void) => {
-      let c = 0;
-      setRolling(true);
-      rollingRef.current = true;
-      const iv = setInterval(() => {
-        setDiceValue(Math.floor(Math.random() * 6) + 1);
-        c++;
-        if (c >= 8) {
-          clearInterval(iv);
-          const final = Math.floor(Math.random() * 6) + 1;
-          setDiceValue(final);
-          setRolling(false);
-          rollingRef.current = false;
-          onDone(final);
-        }
-      }, 80);
-      return () => clearInterval(iv);
-    },
-    [],
-  );
+  const aiTurn = useCallback(
+    (player: number) => {
+      const gs = stateRef.current;
+      if (gs.winner !== null || gs.currentPlayer !== player) return;
+      gs.phase = "wait";
+      gs.message = `${PLAYER_NAMES[player]} is thinking...`;
 
-  const advanceTurn = useCallback(
-    (fromPlayer: number, nPlayers: number, mode: GameMode) => {
-      if (winnerRef.current !== null) return;
-      const nextP = (fromPlayer + 1) % nPlayers;
-      setCurrentPlayer(nextP);
-      currentPlayerRef.current = nextP;
-      if (mode === "computer" && nextP === 1) {
-        // Computer turn
-        setComputerThinking(true);
-        setTimeout(() => {
-          if (winnerRef.current !== null) {
-            setComputerThinking(false);
+      setTimeout(() => {
+        if (stateRef.current.currentPlayer !== player) return;
+        rollDiceFor(player, (dice) => {
+          stateRef.current.diceValue = dice;
+          const movable = getMovableTokens(player, dice);
+          if (movable.length === 0) {
+            const nextPlayer = (player + 1) % 4;
+            stateRef.current.currentPlayer = nextPlayer;
+            stateRef.current.diceValue = null;
+            stateRef.current.phase = "roll";
+            stateRef.current.message = `${PLAYER_NAMES[nextPlayer]}'s turn — Roll the dice!`;
+            if (nextPlayer !== 0) setTimeout(() => aiTurn(nextPlayer), 700);
             return;
           }
-          setComputerThinking(false);
-          playSound("roll");
-          doRollAnimation(8, (cv) => {
-            if (winnerRef.current !== null) return;
-            const extraTurn = applyRoll(1, cv);
-            if (!extraTurn) {
-              // Advance to player 0
-              setTimeout(() => {
-                if (winnerRef.current !== null) return;
-                setCurrentPlayer(0);
-                currentPlayerRef.current = 0;
-              }, 200);
+          // AI strategy: prefer captures, else prefer most advanced token
+          let best = movable[0];
+          for (const t of movable) {
+            // Try to capture
+            const newPos = t.pos === -1 ? 0 : t.pos + dice;
+            if (newPos < 52) {
+              const absIdx = (PLAYER_START_IDX[t.player] + newPos) % 52;
+              const canCapture = stateRef.current.tokens.some(
+                (other) =>
+                  other.player !== player &&
+                  !other.finished &&
+                  other.pos >= 0 &&
+                  other.pos < 52 &&
+                  (PLAYER_START_IDX[other.player] + other.pos) % 52 === absIdx,
+              );
+              if (canCapture) {
+                best = t;
+                break;
+              }
             }
-            // If computer rolled 6, computer gets another turn
-            if (extraTurn && winnerRef.current === null) {
-              setTimeout(() => advanceTurn(0, nPlayers, mode), 1600);
+            // Prefer entering if possible
+            if (t.pos === -1 && dice === 6) {
+              best = t;
+              break;
             }
-          });
-        }, 1400);
-      }
+            // Prefer most advanced
+            if (t.pos > best.pos) best = t;
+          }
+          setTimeout(() => {
+            applyMove(`${best.player}_${best.id}`, dice);
+          }, 600);
+        });
+      }, 600);
     },
-    [playSound, doRollAnimation, applyRoll],
+    [rollDiceFor, getMovableTokens, applyMove],
   );
 
-  const rollDice = useCallback(() => {
+  // Canvas click handler
+  const handleCanvasClick = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      const gs = stateRef.current;
+      if (
+        !gameStarted ||
+        gs.winner !== null ||
+        gs.currentPlayer !== 0 ||
+        gs.phase !== "move" ||
+        animRef.current
+      )
+        return;
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const mx = (e.clientX - rect.left) * scaleX;
+      const my = (e.clientY - rect.top) * scaleY;
+      const cell = canvas.width / COLS;
+
+      // Check if clicked a movable token
+      const tokens = gs.tokens.filter((t) => t.player === 0 && !t.finished);
+      let clicked: Token | null = null;
+      for (const t of tokens) {
+        const [tr, tc] = getTokenPos(t);
+        const px = (tc + 0.5) * cell;
+        const py = (tr + 0.5) * cell;
+        const dist = Math.hypot(mx - px, my - py);
+        if (dist < cell * 0.45) {
+          clicked = t;
+          break;
+        }
+      }
+      if (!clicked) return;
+      const key = `${clicked.player}_${clicked.id}`;
+      if (!movableRef.current.includes(key)) return;
+      applyMove(key, gs.diceValue!);
+    },
+    [gameStarted, applyMove],
+  );
+
+  // Roll button handler
+  const handleRoll = useCallback(() => {
+    const gs = stateRef.current;
     if (
-      rollingRef.current ||
       !gameStarted ||
-      winnerRef.current !== null ||
-      computerThinking
+      gs.currentPlayer !== 0 ||
+      gs.phase !== "roll" ||
+      animRef.current ||
+      gs.winner !== null
     )
       return;
-    if (gameMode === "computer" && currentPlayerRef.current === 1) return;
-    const me = currentPlayerRef.current;
-    playSound("roll");
-    doRollAnimation(8, (finalVal) => {
-      if (winnerRef.current !== null) return;
-      const extraTurn = applyRoll(me, finalVal);
-      if (!extraTurn) {
-        setTimeout(() => advanceTurn(me, numPlayers, gameMode), 150);
+    gs.phase = "wait";
+    rollDiceFor(0, (dice) => {
+      gs.diceValue = dice;
+      const movable = getMovableKeys(0, dice);
+      if (movable.length === 0) {
+        const nextPlayer = 1;
+        gs.currentPlayer = nextPlayer;
+        gs.diceValue = null;
+        gs.phase = "roll";
+        gs.message = `No moves for Red! ${PLAYER_NAMES[nextPlayer]}'s turn.`;
+        setTimeout(() => aiTurn(nextPlayer), 700);
+        return;
       }
-      // If rolled 6 (and not won), player rolls again — no turn advance needed
+      movableRef.current = movable;
+      gs.phase = "move";
+      gs.message =
+        dice === 6
+          ? "You rolled 6! Pick a token."
+          : `You rolled ${dice}! Pick a token.`;
     });
-  }, [
-    gameStarted,
-    computerThinking,
-    gameMode,
-    numPlayers,
-    playSound,
-    doRollAnimation,
-    applyRoll,
-    advanceTurn,
-  ]);
+  }, [gameStarted, rollDiceFor, getMovableKeys, aiTurn]);
 
-  const resetGame = () => {
-    setGameStarted(false);
-    setGameMode(null);
-    setSteps([0, 0, 0, 0]);
-    stepsRef.current = [0, 0, 0, 0];
-    setDiceValue(null);
-    setCurrentPlayer(0);
-    currentPlayerRef.current = 0;
-    setWinner(null);
-    winnerRef.current = null;
-    setComputerThinking(false);
-    rollingRef.current = false;
-    setRolling(false);
+  // Main render loop
+  useEffect(() => {
+    if (!open || !gameStarted) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d")!;
+    let last = 0;
+
+    const loop = (ts: number) => {
+      const dt = Math.min((ts - last) / 1000, 0.05);
+      last = ts;
+      pulseRef.current += dt;
+
+      // Advance dice roll animation
+      const dr = diceRollRef.current;
+      if (dr) {
+        dr.left--;
+        diceDisplayRef.current =
+          dr.left > 2 ? Math.floor(Math.random() * 6) + 1 : dr.target;
+        if (dr.left <= 0) {
+          diceDisplayRef.current = dr.target;
+          diceRollRef.current = null;
+          dr.onDone(dr.target);
+        }
+      }
+
+      // Advance token animation
+      const anim = animRef.current;
+      if (anim) {
+        anim.progress += dt * 6;
+        if (anim.progress >= 1) {
+          anim.progress = 0;
+          anim.stepIdx++;
+          if (anim.stepIdx >= anim.steps.length - 1) {
+            anim.onDone();
+          }
+        }
+      }
+
+      // Advance confetti
+      confettiRef.current = confettiRef.current.filter((c) => c.life > 0);
+      for (const c of confettiRef.current) {
+        c.x += c.vx;
+        c.y += c.vy;
+        c.vy += 0.15;
+        c.life -= 0.018;
+      }
+
+      // Draw
+      const sz = canvas.width;
+      drawBoard(ctx, sz);
+      drawTokens(
+        ctx,
+        sz,
+        stateRef.current.tokens,
+        animRef.current,
+        selectedRef.current,
+        movableRef.current,
+        pulseRef.current,
+      );
+
+      // Draw confetti
+      for (const c of confettiRef.current) {
+        ctx.save();
+        ctx.globalAlpha = c.life;
+        ctx.fillStyle = c.color;
+        ctx.fillRect(c.x, c.y, 6, 6);
+        ctx.restore();
+      }
+
+      rafRef.current = requestAnimationFrame(loop);
+    };
+
+    rafRef.current = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [open, gameStarted]);
+
+  // Resize canvas
+  useEffect(() => {
+    if (!open) return;
+    const resize = () => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const parent = canvas.parentElement;
+      if (!parent) return;
+      const sz = Math.min(parent.clientWidth, parent.clientHeight, 520);
+      canvas.width = sz;
+      canvas.height = sz;
+    };
+    resize();
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, [open]);
+
+  const startGame = () => {
+    stateRef.current = {
+      tokens: initTokens(),
+      currentPlayer: 0,
+      phase: "roll",
+      diceValue: null,
+      winner: null,
+      message: "Red's turn — Roll the dice!",
+    };
+    animRef.current = null;
+    diceRollRef.current = null;
+    diceDisplayRef.current = null;
+    confettiRef.current = [];
+    selectedRef.current = null;
+    movableRef.current = [];
+    setGameStarted(true);
+    rerender();
   };
 
-  useEffect(
-    () => () => {
-      audioRef.current?.close();
-    },
-    [],
-  );
-
+  const gs = stateRef.current;
   const canRoll =
-    !rolling &&
     gameStarted &&
-    winner === null &&
-    !computerThinking &&
-    !(gameMode === "computer" && currentPlayer === 1);
+    gs.currentPlayer === 0 &&
+    gs.phase === "roll" &&
+    !animRef.current &&
+    gs.winner === null;
 
   if (!open) return null;
 
   return (
-    <AnimatePresence>
-      <motion.div
-        className="fixed inset-0 z-50 flex items-center justify-center p-2 md:p-4"
-        style={{ background: "rgba(0,0,0,0.92)", backdropFilter: "blur(8px)" }}
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.92)", backdropFilter: "blur(8px)" }}
+    >
+      <div
+        className="flex flex-col rounded-2xl overflow-hidden"
+        style={{
+          background: "linear-gradient(135deg,#0a0a18,#120528)",
+          border: "1px solid rgba(150,100,255,0.35)",
+          boxShadow: "0 0 80px rgba(120,60,255,0.25)",
+          maxWidth: 700,
+          width: "98vw",
+          maxHeight: "97vh",
+        }}
       >
-        <motion.div
-          className="w-full max-w-3xl rounded-2xl overflow-hidden flex flex-col"
+        {/* Header */}
+        <div
+          className="flex items-center justify-between px-4 py-2 flex-shrink-0"
           style={{
-            background: "linear-gradient(135deg, #0a0a18, #120528)",
-            border: "1px solid rgba(150,100,255,0.35)",
-            boxShadow:
-              "0 0 80px rgba(120,60,255,0.25), inset 0 0 60px rgba(0,0,0,0.4)",
-            maxHeight: "96vh",
+            borderBottom: "1px solid rgba(150,100,255,0.2)",
+            background: "rgba(0,0,0,0.3)",
           }}
-          initial={{ scale: 0.9, y: 20 }}
-          animate={{ scale: 1, y: 0 }}
-          exit={{ scale: 0.9, y: 20 }}
         >
-          {/* Header */}
-          <div
-            className="flex items-center justify-between px-4 py-3 flex-shrink-0"
-            style={{
-              borderBottom: "1px solid rgba(150,100,255,0.2)",
-              background: "rgba(0,0,0,0.3)",
-            }}
-          >
-            <div className="flex items-center gap-2">
-              <span className="text-xl">🎲</span>
-              <div>
-                <h2 className="font-bold text-white text-base leading-tight">
-                  Ludo 3D
-                </h2>
-                <p
-                  className="text-xs"
-                  style={{ color: "rgba(200,150,255,0.6)" }}
-                >
-                  {!gameMode
-                    ? "Choose mode"
-                    : gameMode === "computer"
-                      ? "vs Computer"
-                      : `${numPlayers} players`}
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                data-ocid="ludo.sound_toggle"
-                onClick={() => setSoundOn((v) => !v)}
-                className="p-1.5 rounded-lg text-sm transition-all"
-                style={{
-                  background: soundOn
-                    ? "rgba(100,200,100,0.15)"
-                    : "rgba(100,100,100,0.15)",
-                  border: `1px solid ${soundOn ? "rgba(100,200,100,0.35)" : "rgba(100,100,100,0.25)"}`,
-                  color: soundOn ? "#86efac" : "#6b7280",
-                }}
-              >
-                {soundOn ? "🔊" : "🔇"}
-              </button>
-              <button
-                type="button"
-                data-ocid="ludo.exit_button"
-                onClick={() => {
-                  resetGame();
-                  onClose();
-                }}
-                className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
-                style={{
-                  background: "rgba(239,68,68,0.15)",
-                  border: "1px solid rgba(239,68,68,0.35)",
-                  color: "#fca5a5",
-                }}
-              >
-                ✕ Exit
-              </button>
+          <div className="flex items-center gap-2">
+            <span className="text-xl">🎲</span>
+            <div>
+              <h2 className="font-bold text-white text-base">Ludo</h2>
+              <p className="text-xs" style={{ color: "rgba(200,150,255,0.6)" }}>
+                2D Canvas Game
+              </p>
             </div>
           </div>
-
-          <div className="flex flex-col md:flex-row flex-1 min-h-0">
-            {/* 3D Canvas */}
-            <div
-              className="relative flex-1"
-              style={{ minHeight: 320, maxHeight: 500 }}
-            >
-              <Canvas
-                camera={{
-                  position: [0, 12, 10] as [number, number, number],
-                  fov: 50,
-                }}
-                shadows
-                style={{ background: "#050510", width: "100%", height: "100%" }}
-              >
-                {gameStarted ? (
-                  <LudoScene
-                    steps={steps}
-                    numPlayers={numPlayers}
-                    currentPlayer={currentPlayer}
-                    winner={winner}
-                    rolling={rolling}
-                    diceValue={diceValue}
-                    canRoll={canRoll}
-                  />
-                ) : (
-                  <>
-                    <ambientLight intensity={0.5} />
-                    <directionalLight position={[5, 10, 5]} intensity={1} />
-                    <OrbitControls
-                      autoRotate
-                      autoRotateSpeed={1}
-                      enableZoom={false}
-                    />
-                    {BOARD_TILES.map(({ row, col }) => (
-                      <mesh
-                        key={`${row}-${col}`}
-                        position={[col - 7, 0, row - 7]}
-                      >
-                        <boxGeometry args={[0.93, 0.15, 0.93]} />
-                        <meshStandardMaterial
-                          color={getBoardTileColor(row, col)}
-                          emissive={getBoardTileColor(row, col)}
-                          emissiveIntensity={0.1}
-                        />
-                      </mesh>
-                    ))}
-                  </>
-                )}
-              </Canvas>
-
-              {/* Win overlay */}
-              {winner !== null && (
-                <motion.div
-                  className="absolute inset-0 flex items-center justify-center"
-                  initial={{ opacity: 0, scale: 0.5 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  style={{
-                    background: "rgba(0,0,0,0.65)",
-                    backdropFilter: "blur(4px)",
-                  }}
-                >
-                  <div
-                    className="text-center p-6 rounded-2xl"
-                    style={{
-                      background: `linear-gradient(135deg, ${PLAYER_COLORS[winner].bg}30, #0a0a18)`,
-                      border: `2px solid ${PLAYER_COLORS[winner].bg}80`,
-                      boxShadow: `0 0 40px ${PLAYER_COLORS[winner].bg}60`,
-                    }}
-                  >
-                    <motion.div
-                      animate={{
-                        rotate: [0, -10, 10, -10, 10, 0],
-                        y: [0, -10, 0],
-                      }}
-                      transition={{
-                        repeat: Number.POSITIVE_INFINITY,
-                        duration: 1.5,
-                      }}
-                      className="text-5xl mb-2"
-                    >
-                      🏆
-                    </motion.div>
-                    <p className="text-xl font-bold text-white">
-                      {players[winner]?.name} Wins!
-                    </p>
-                    <p
-                      style={{ color: PLAYER_COLORS[winner].light }}
-                      className="text-sm mt-1"
-                    >
-                      {PLAYER_COLORS[winner].name} team
-                    </p>
-                  </div>
-                </motion.div>
-              )}
-
-              {computerThinking && (
-                <div
-                  className="absolute top-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full text-xs flex items-center gap-2"
-                  style={{
-                    background: "rgba(124,58,237,0.3)",
-                    border: "1px solid rgba(168,85,247,0.4)",
-                    color: "#c084fc",
-                  }}
-                >
-                  <span className="animate-spin inline-block">⚙️</span> Computer
-                  thinking...
-                </div>
-              )}
-
-              {canRoll && (
-                <button
-                  type="button"
-                  data-ocid="ludo.dice_button"
-                  onClick={rollDice}
-                  className="absolute bottom-3 right-3 px-3 py-1.5 rounded-xl text-xs font-semibold animate-pulse"
-                  style={{
-                    background: "rgba(168,85,247,0.25)",
-                    border: "1px solid rgba(168,85,247,0.5)",
-                    color: "#e9d5ff",
-                  }}
-                >
-                  🎲 Roll Dice
-                </button>
-              )}
-            </div>
-
-            {/* Side panel */}
-            <div
-              className="flex flex-col gap-3 p-3 md:w-52 flex-shrink-0"
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-ocid="ludo.sound_toggle"
+              onClick={() => {
+                soundOnRef.current = !soundOn;
+                setSoundOn((v) => !v);
+              }}
+              className="p-1.5 rounded-lg text-sm"
               style={{
-                borderTop: "1px solid rgba(150,100,255,0.15)",
-                borderLeft: "1px solid rgba(150,100,255,0.1)",
-                background: "rgba(0,0,0,0.25)",
+                background: soundOn
+                  ? "rgba(100,200,100,0.15)"
+                  : "rgba(100,100,100,0.15)",
+                border: `1px solid ${
+                  soundOn ? "rgba(100,200,100,0.35)" : "rgba(100,100,100,0.25)"
+                }`,
+                color: soundOn ? "#86efac" : "#6b7280",
               }}
             >
-              {!gameMode && (
-                <div className="space-y-2">
-                  <p
-                    className="text-xs text-center"
-                    style={{ color: "rgba(200,150,255,0.6)" }}
-                  >
-                    Select Game Mode
-                  </p>
-                  <button
-                    type="button"
-                    data-ocid="ludo.mode_vs_players_button"
-                    onClick={() => setGameMode("players")}
-                    className="w-full py-2 rounded-xl font-semibold text-xs transition-all hover:scale-105"
-                    style={{
-                      background: "linear-gradient(135deg, #0ea5e9, #6366f1)",
-                      color: "white",
-                      boxShadow: "0 0 12px rgba(99,102,241,0.3)",
-                    }}
-                  >
-                    👥 vs Players
-                  </button>
-                  <button
-                    type="button"
-                    data-ocid="ludo.mode_vs_computer_button"
-                    onClick={() => setGameMode("computer")}
-                    className="w-full py-2 rounded-xl font-semibold text-xs transition-all hover:scale-105"
-                    style={{
-                      background: "linear-gradient(135deg, #7c3aed, #a855f7)",
-                      color: "white",
-                      boxShadow: "0 0 12px rgba(120,60,255,0.3)",
-                    }}
-                  >
-                    🤖 vs Computer
-                  </button>
-                </div>
-              )}
+              {soundOn ? "🔊" : "🔇"}
+            </button>
+            <button
+              type="button"
+              data-ocid="ludo.exit_button"
+              onClick={() => {
+                setGameStarted(false);
+                onClose();
+              }}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium"
+              style={{
+                background: "rgba(239,68,68,0.15)",
+                border: "1px solid rgba(239,68,68,0.35)",
+                color: "#fca5a5",
+              }}
+            >
+              ✕ Exit
+            </button>
+          </div>
+        </div>
 
-              {gameMode && (
-                <div className="space-y-1.5">
-                  <p
-                    className="text-xs"
-                    style={{ color: "rgba(200,150,255,0.5)" }}
-                  >
-                    Players
-                  </p>
-                  {players.slice(0, numPlayers).map((player, idx) => (
-                    <div
-                      key={player.id}
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-lg"
-                      style={{
-                        background:
-                          currentPlayer === idx && gameStarted
-                            ? `${PLAYER_COLORS[idx].bg}18`
-                            : "rgba(255,255,255,0.04)",
-                        border: `1px solid ${currentPlayer === idx && gameStarted ? `${PLAYER_COLORS[idx].bg}50` : "rgba(255,255,255,0.07)"}`,
-                      }}
-                    >
-                      <div
-                        className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold text-white flex-shrink-0"
-                        style={{
-                          background:
-                            player.id === "computer_ai"
-                              ? "#7c3aed"
-                              : getAvatarColor(player.id),
-                        }}
-                      >
-                        {player.id === "computer_ai"
-                          ? "🤖"
-                          : getInitials(player.name)}
-                      </div>
-                      <div
-                        className="w-2 h-2 rounded-full flex-shrink-0"
-                        style={{
-                          background: PLAYER_COLORS[idx].bg,
-                          boxShadow: `0 0 4px ${PLAYER_COLORS[idx].bg}`,
-                        }}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-[10px] font-medium text-white truncate">
-                          {player.name}
-                          {player.id === currentUser.id ? " (You)" : ""}
-                        </p>
-                        <p
-                          className="text-[9px]"
-                          style={{ color: PLAYER_COLORS[idx].light }}
-                        >
-                          {steps[idx] === 0
-                            ? "Home"
-                            : steps[idx] >= STEPS_TO_WIN
-                              ? "🏆 Won!"
-                              : `Step ${steps[idx]}/52`}
-                        </p>
-                      </div>
-                      {currentPlayer === idx &&
-                        gameStarted &&
-                        winner === null && (
-                          <span className="text-[10px] animate-pulse text-yellow-300">
-                            ▶
-                          </span>
-                        )}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {gameStarted && winner === null && (
+        {/* Body */}
+        <div className="flex flex-col md:flex-row flex-1 min-h-0 overflow-hidden">
+          {/* Canvas area */}
+          <div
+            className="relative flex items-center justify-center p-2 flex-1"
+            style={{ minHeight: 280 }}
+          >
+            <canvas
+              ref={canvasRef}
+              data-ocid="ludo.canvas_target"
+              onClick={handleCanvasClick}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  handleCanvasClick(
+                    e as unknown as React.MouseEvent<HTMLCanvasElement>,
+                  );
+                }
+              }}
+              tabIndex={0}
+              style={{
+                imageRendering: "pixelated",
+                cursor: gs.phase === "move" ? "pointer" : "default",
+                maxWidth: "100%",
+                maxHeight: "100%",
+              }}
+            />
+            {!gameStarted && (
+              <div className="absolute inset-0 flex items-center justify-center">
                 <div
-                  className="px-2 py-2 rounded-lg text-center"
+                  className="text-center p-8 rounded-2xl"
                   style={{
-                    background: `${PLAYER_COLORS[currentPlayer].bg}15`,
-                    border: `1px solid ${PLAYER_COLORS[currentPlayer].bg}40`,
+                    background: "rgba(10,10,24,0.9)",
+                    border: "1px solid rgba(150,100,255,0.3)",
                   }}
                 >
+                  <div className="text-5xl mb-3">🎲</div>
+                  <h3 className="text-white font-bold text-xl mb-2">
+                    Ludo Game
+                  </h3>
                   <p
-                    className="text-[10px]"
-                    style={{ color: PLAYER_COLORS[currentPlayer].light }}
+                    className="text-xs mb-4"
+                    style={{ color: "rgba(200,150,255,0.6)" }}
                   >
-                    {players[currentPlayer]?.name}'s turn
+                    You are Red. 3 AI opponents.
                   </p>
-                  {diceValue && (
-                    <p className="text-sm font-bold text-white mt-0.5">
-                      Rolled: {diceValue}
-                    </p>
-                  )}
-                  {steps[currentPlayer] === 0 && (
-                    <p
-                      className="text-[9px] mt-0.5"
-                      style={{ color: "rgba(200,150,255,0.6)" }}
-                    >
-                      Need 6 to enter!
-                    </p>
-                  )}
-                  {steps[currentPlayer] > 0 &&
-                    steps[currentPlayer] < STEPS_TO_WIN && (
-                      <p
-                        className="text-[9px] mt-0.5"
-                        style={{ color: "rgba(200,150,255,0.5)" }}
-                      >
-                        {STEPS_TO_WIN - steps[currentPlayer]} steps to win
-                      </p>
-                    )}
-                </div>
-              )}
-
-              <div className="flex flex-col gap-2 mt-auto">
-                {gameMode && !gameStarted && (
                   <button
                     type="button"
                     data-ocid="ludo.start_button"
-                    onClick={() => {
-                      setGameStarted(true);
-                      setSteps([0, 0, 0, 0]);
-                      stepsRef.current = [0, 0, 0, 0];
-                      setCurrentPlayer(0);
-                      currentPlayerRef.current = 0;
-                      setWinner(null);
-                      winnerRef.current = null;
-                    }}
-                    className="w-full py-2 rounded-xl font-semibold text-xs transition-all hover:scale-105 active:scale-95"
+                    onClick={startGame}
+                    className="px-6 py-2.5 rounded-xl font-bold text-white text-sm"
                     style={{
-                      background: "linear-gradient(135deg, #7c3aed, #a855f7)",
-                      color: "white",
-                      boxShadow: "0 0 16px rgba(120,60,255,0.4)",
+                      background: "linear-gradient(135deg,#7c3aed,#a855f7)",
+                      boxShadow: "0 0 20px rgba(120,60,255,0.5)",
                     }}
                   >
                     🎮 Start Game
                   </button>
-                )}
-                {winner !== null && (
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Side panel */}
+          <div
+            className="flex flex-col gap-2 p-3 md:w-48 flex-shrink-0"
+            style={{
+              borderTop: "1px solid rgba(150,100,255,0.15)",
+              borderLeft: "1px solid rgba(150,100,255,0.1)",
+              background: "rgba(0,0,0,0.25)",
+            }}
+          >
+            {/* Player list */}
+            <p className="text-xs" style={{ color: "rgba(200,150,255,0.5)" }}>
+              Players
+            </p>
+            {PLAYER_NAMES.map((name, idx) => {
+              const playerTokens = gs.tokens.filter((t) => t.player === idx);
+              const finished = playerTokens.filter((t) => t.finished).length;
+              const isCurrent =
+                gameStarted && gs.currentPlayer === idx && gs.winner === null;
+              return (
+                <div
+                  key={name}
+                  className="flex items-center gap-2 px-2 py-1.5 rounded-lg"
+                  style={{
+                    background: isCurrent
+                      ? `${PLAYER_COLORS[idx]}18`
+                      : "rgba(255,255,255,0.04)",
+                    border: `1px solid ${
+                      isCurrent
+                        ? `${PLAYER_COLORS[idx]}50`
+                        : "rgba(255,255,255,0.07)"
+                    }`,
+                    transition: "all 0.3s",
+                  }}
+                >
+                  <div
+                    className="w-3 h-3 rounded-full flex-shrink-0"
+                    style={{
+                      background: PLAYER_COLORS[idx],
+                      boxShadow: `0 0 5px ${PLAYER_COLORS[idx]}`,
+                    }}
+                  />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium text-white">
+                      {name}
+                      {idx === 0 ? " (You)" : " (AI)"}
+                    </p>
+                    <p
+                      className="text-[10px]"
+                      style={{ color: PLAYER_LIGHT[idx] }}
+                    >
+                      {gs.winner === idx ? "🏆 Won!" : `${finished}/4 home`}
+                    </p>
+                  </div>
+                  {isCurrent && (
+                    <span className="text-[10px] animate-pulse text-yellow-300">
+                      ▶
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* Dice */}
+            {gameStarted && (
+              <div className="flex flex-col items-center gap-2 mt-2">
+                <div style={{ width: 64, height: 64 }}>
+                  <canvas
+                    id="dice-canvas"
+                    width={64}
+                    height={64}
+                    ref={(el) => {
+                      if (!el) return;
+                      const ctx2 = el.getContext("2d")!;
+                      ctx2.clearRect(0, 0, 64, 64);
+                      drawDice(
+                        ctx2,
+                        diceDisplayRef.current ?? gs.diceValue,
+                        !!diceRollRef.current,
+                        2,
+                        2,
+                        60,
+                        canRoll,
+                        pulseRef.current,
+                      );
+                    }}
+                  />
+                </div>
+                {canRoll && (
                   <button
                     type="button"
-                    data-ocid="ludo.start_button"
-                    onClick={resetGame}
-                    className="w-full py-2 rounded-xl font-semibold text-xs transition-all hover:scale-105 active:scale-95"
+                    data-ocid="ludo.dice_button"
+                    onClick={handleRoll}
+                    className="w-full py-2 rounded-xl text-xs font-bold text-white"
                     style={{
-                      background: "linear-gradient(135deg, #7c3aed, #a855f7)",
-                      color: "white",
+                      background: "linear-gradient(135deg,#7c3aed,#a855f7)",
                       boxShadow: "0 0 16px rgba(120,60,255,0.4)",
+                      animation: "pulse 1s infinite",
                     }}
                   >
-                    🔄 Play Again
-                  </button>
-                )}
-                {gameMode && gameStarted && winner === null && (
-                  <button
-                    type="button"
-                    onClick={resetGame}
-                    className="w-full py-1.5 rounded-xl text-xs transition-all"
-                    style={{
-                      background: "rgba(100,100,100,0.1)",
-                      border: "1px solid rgba(100,100,100,0.2)",
-                      color: "#9ca3af",
-                    }}
-                  >
-                    ↩ New Game
+                    🎲 Roll!
                   </button>
                 )}
               </div>
+            )}
+
+            {/* Status message */}
+            {gameStarted && (
+              <div
+                className="px-2 py-2 rounded-lg text-center mt-1"
+                style={{
+                  background: "rgba(255,255,255,0.04)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                }}
+              >
+                <p className="text-[11px] text-white leading-tight">
+                  {gs.message}
+                </p>
+                {gs.phase === "move" && gs.currentPlayer === 0 && (
+                  <p
+                    className="text-[10px] mt-1"
+                    style={{ color: "rgba(200,150,255,0.7)" }}
+                  >
+                    Click a glowing token
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Buttons */}
+            <div className="flex flex-col gap-1.5 mt-auto">
+              {gs.winner !== null && (
+                <button
+                  type="button"
+                  data-ocid="ludo.start_button"
+                  onClick={startGame}
+                  className="w-full py-2 rounded-xl font-bold text-xs text-white"
+                  style={{
+                    background: "linear-gradient(135deg,#7c3aed,#a855f7)",
+                    boxShadow: "0 0 16px rgba(120,60,255,0.4)",
+                  }}
+                >
+                  🔄 Play Again
+                </button>
+              )}
+              {gameStarted && gs.winner === null && (
+                <button
+                  type="button"
+                  onClick={startGame}
+                  className="w-full py-1.5 rounded-xl text-xs"
+                  style={{
+                    background: "rgba(100,100,100,0.1)",
+                    border: "1px solid rgba(100,100,100,0.2)",
+                    color: "#9ca3af",
+                  }}
+                >
+                  ↩ New Game
+                </button>
+              )}
             </div>
           </div>
-        </motion.div>
-      </motion.div>
-    </AnimatePresence>
+        </div>
+      </div>
+    </div>
   );
 }

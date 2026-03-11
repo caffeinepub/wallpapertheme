@@ -1,30 +1,25 @@
-# Reckon - Omegle Video Chat
+# Reckon Messenger
 
 ## Current State
-The app has an OmegleChat.tsx component (1977 lines) but real-time WebRTC between real users is broken. Camera/mic access issues persist. The backend has no Omegle signaling support.
+- OmegleChat component uses an iframe to embed omegleweb.io, which refuses to load due to X-Frame-Options/CSP blocking ("refuse to connect" error)
+- Ludo 2D Canvas tokens are drawn but appear small and lack strong visual presence
 
 ## Requested Changes (Diff)
 
 ### Add
-- Backend Omegle signaling: queue, matchmaking, WebRTC signal exchange, chat messages
-- Proper getUserMedia with error recovery in frontend
-- Real WebRTC peer connection using backend as signaling relay
-- Local video preview shown immediately on permission grant
-- Stranger video shown when matched and connected
-- Camera on/off toggle, mic on/off toggle
-- Chat panel alongside video
-- Country/age display for matched user
-- "Next" button to skip to a new stranger
-- Connection sound/animation on match
+- WebRTC signaling in Motoko backend: waiting queue, matched pairs, offer/answer/ICE candidate exchange
+- OmegleChat: full browser-based WebRTC peer-to-peer random video chat (no iframe), with local camera preview, stranger video, city/country/age display, next/disconnect, animated connection effects
+- Ludo tokens: 3D gradient fill, neon glow ring, larger radius, pulsing scale animation on movable tokens, floating shadow
 
 ### Modify
-- OmegleChat.tsx: full rewrite for working WebRTC with backend signaling
-- Backend main.mo: add Omegle signaling APIs
+- OmegleChat.tsx: replace iframe with WebRTC implementation using backend signaling
+- LudoGame.tsx: enhance drawTokens to use radial gradient, stronger glow, larger size, animated bounce effect
+- main.mo: add signaling types and functions
 
 ### Remove
-- Old broken OmegleChat simulation code
+- iframe embed of omegleweb.io
 
 ## Implementation Plan
-1. Add Omegle signaling to main.mo: joinQueue, pollMatch, sendSignal, getSignals, sendOmegleChat, getOmegleChats, leaveOmegle
-2. Regenerate backend bindings
-3. Rewrite OmegleChat.tsx with real WebRTC + backend polling signaling
+1. Add Motoko signaling: joinQueue, leaveQueue, pollMatch, sendSignal, getSignals functions
+2. Rewrite OmegleChat to use getUserMedia + RTCPeerConnection + backend polling for signaling
+3. Enhance LudoGame drawTokens with radial gradient, bigger radius, 3D shadow, neon glow pulse

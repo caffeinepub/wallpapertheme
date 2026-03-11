@@ -144,4 +144,112 @@ actor {
   public query ({ caller }) func getImageMetadataFrontEnd(_ : Text) : async Text {
     Runtime.trap("image not found");
   };
+
+  // ─── WebRTC Random Video Chat Signaling ───────────────────────────────────
+
+  public type SignalMessage = {
+    from : Text;
+    msgType : Text; // "offer", "answer", "ice"
+    data : Text;
+  };
+
+  public type MatchInfo = {
+    peerId : Text;
+    peerCountry : Text;
+    peerAge : Nat;
+    isInitiator : Bool;
+  };
+
+  // waiting queue: sessionId -> (principalText, country, age)
+  let waitingQueue = Map.empty<Text, (Text, Text, Nat)>();
+  let matchedPairs = Map.empty<Text, Text>(); // sessionId -> peerSessionId
+  let signalStore = Map.empty<Text, [SignalMessage]>(); // sessionId -> pending messages
+
+  var sessionCounter : Nat = 0;
+
+  // Join the queue; returns a sessionId
+  public shared ({ caller }) func joinOmegleQueue(country : Text, age : Nat) : async Text {
+    sessionCounter += 1;
+    let sid = "s" # Nat.toText(sessionCounter);
+    var matchedWith : ?Text = null;
+    label outer for ((wsid, (wprinc, _wcountry, _wage)) in waitingQueue.entries()) {
+      if (wprinc != caller.toText()) {
+        matchedWith := ?wsid;
+        break outer;
+      };
+    };
+    switch (matchedWith) {
+      case (?wsid) {
+        ignore waitingQueue.remove(wsid);
+        matchedPairs.add(sid, wsid);
+        matchedPairs.add(wsid, sid);
+        signalStore.add(sid, []);
+        signalStore.add(wsid, []);
+      };
+      case (null) {
+        waitingQueue.add(sid, (caller.toText(), country, age));
+      };
+    };
+    sid
+  };
+
+  // Poll for match status
+  public query func pollOmegleMatch(sid : Text) : async ?MatchInfo {
+    switch (matchedPairs.get(sid)) {
+      case (null) { null };
+      case (?peerSid) {
+        let isInit = sid < peerSid;
+        ?{
+          peerId = peerSid;
+          peerCountry = "Unknown";
+          peerAge = 20;
+          isInitiator = isInit;
+        };
+      };
+    };
+  };
+
+  // Send a signal message to the peer
+  public shared ({ caller }) func sendOmegleSignal(sid : Text, msgType : Text, data : Text) : async () {
+    switch (matchedPairs.get(sid)) {
+      case (null) { Runtime.trap("Not matched") };
+      case (?peerSid) {
+        let msg : SignalMessage = { from = sid; msgType; data };
+        let existing = switch (signalStore.get(peerSid)) {
+          case (null) { [] };
+          case (?msgs) { msgs };
+        };
+        signalStore.add(peerSid, existing.concat([msg]));
+      };
+    };
+  };
+
+  // Drain and return pending signal messages for this session
+  public shared ({ caller }) func getOmegleSignals(sid : Text) : async [SignalMessage] {
+    switch (signalStore.get(sid)) {
+      case (null) { [] };
+      case (?msgs) {
+        signalStore.add(sid, []);
+        msgs;
+      };
+    };
+  };
+
+  // Leave / disconnect
+  public shared ({ caller }) func leaveOmegleQueue(sid : Text) : async () {
+    ignore waitingQueue.remove(sid);
+    switch (matchedPairs.get(sid)) {
+      case (null) {};
+      case (?peerSid) {
+        ignore matchedPairs.remove(sid);
+        ignore matchedPairs.remove(peerSid);
+        ignore signalStore.remove(sid);
+        ignore signalStore.remove(peerSid);
+      };
+    };
+  };
+
+  public query func getOmegleActiveCount() : async Nat {
+    waitingQueue.size() + matchedPairs.size();
+  };
 };
