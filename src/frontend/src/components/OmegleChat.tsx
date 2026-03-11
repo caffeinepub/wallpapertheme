@@ -6,12 +6,18 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Check,
   Copy,
+  Gamepad2,
+  Grid3X3,
+  MessageSquare,
   Mic,
   MicOff,
   Phone,
   PhoneOff,
   Send,
   Shield,
+  StopCircle,
+  Timer,
+  UserPlus,
   Users,
   Video,
   VideoOff,
@@ -20,6 +26,9 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useActor } from "../hooks/useActor";
+import LudoGame from "./LudoGame";
+import TicTacToe3D from "./TicTacToe3D";
 
 type Message = {
   id: string;
@@ -27,7 +36,14 @@ type Message = {
   from: "me" | "stranger";
   time: string;
 };
-type Status = "idle" | "connecting" | "connected" | "disconnected";
+type Status =
+  | "idle"
+  | "searching"
+  | "connecting"
+  | "connected"
+  | "disconnected";
+type PanelTab = "chat" | "members";
+type MobilePanel = null | PanelTab;
 
 interface Props {
   open?: boolean;
@@ -45,7 +61,24 @@ const mkMsg = (text: string, from: "me" | "stranger"): Message => ({
   }),
 });
 
-// Ensure PeerJS CDN script is loaded
+const SEARCH_DURATION = 120; // seconds
+const POLL_INTERVAL = 800; // ms
+const MAX_POLLS = Math.ceil((SEARCH_DURATION * 1000) / POLL_INTERVAL);
+
+function generateRoomCode(): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const digits = "0123456789";
+  const letters = Array.from(
+    { length: 4 },
+    () => chars[Math.floor(Math.random() * chars.length)],
+  ).join("");
+  const nums = Array.from(
+    { length: 4 },
+    () => digits[Math.floor(Math.random() * digits.length)],
+  ).join("");
+  return letters + nums;
+}
+
 function ensurePeerJS(): Promise<void> {
   return new Promise((resolve) => {
     if (window.Peer) {
@@ -65,8 +98,14 @@ function ensurePeerJS(): Promise<void> {
   });
 }
 
-export default function OmegleChat({ open: _open, onClose }: Props) {
-  const [myPeerId, setMyPeerId] = useState("");
+export default function OmegleChat({ open, onClose }: Props) {
+  const { actor } = useActor();
+
+  const roomCodeRef = useRef<string | null>(null);
+  if (!roomCodeRef.current) roomCodeRef.current = generateRoomCode();
+  const roomCode = roomCodeRef.current;
+
+  const [_myPeerId, setMyPeerId] = useState("");
   const [remotePeerId, setRemotePeerId] = useState("");
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
@@ -78,6 +117,21 @@ export default function OmegleChat({ open: _open, onClose }: Props) {
   const [status, setStatus] = useState<Status>("idle");
   const [camError, setCamError] = useState("");
   const [peerReady, setPeerReady] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [activeTab, setActiveTab] = useState<PanelTab>("chat");
+  const [mobilePanel, setMobilePanel] = useState<MobilePanel>(null);
+  const [showRoomConnect, setShowRoomConnect] = useState(false);
+  const [showAddUser, setShowAddUser] = useState(false);
+  const [showLudo, setShowLudo] = useState(false);
+  const [showTtt, setShowTtt] = useState(false);
+
+  // Search / countdown state
+  const [searchSecondsLeft, setSearchSecondsLeft] = useState(SEARCH_DURATION);
+  const [searchError, setSearchError] = useState("");
+  const sessionIdRef = useRef<string | null>(null);
+  const pollCountRef = useRef(0);
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const peerRef = useRef(null);
   const localStreamRef = useRef(null);
@@ -86,12 +140,37 @@ export default function OmegleChat({ open: _open, onClose }: Props) {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const mobilePanelRef = useRef(mobilePanel);
+
+  useEffect(() => {
+    mobilePanelRef.current = mobilePanel;
+    if (mobilePanel === "chat") setUnreadCount(0);
+  }, [mobilePanel]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   });
 
+  const clearSearchTimers = () => {
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
+  };
+
   const handleDisconnect = useCallback((manual = true) => {
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
     callRef.current?.close();
     connectionRef.current?.close();
     callRef.current = null;
@@ -100,12 +179,118 @@ export default function OmegleChat({ open: _open, onClose }: Props) {
     setIsConnected(false);
     setIsConnecting(false);
     setStatus(manual ? "idle" : "disconnected");
+    setSearchSecondsLeft(SEARCH_DURATION);
+    setSearchError("");
+    pollCountRef.current = 0;
+    sessionIdRef.current = null;
     if (!manual)
       setMessages((prev) => [
         ...prev,
         mkMsg("Stranger has disconnected.", "stranger"),
       ]);
   }, []);
+
+  const connectToPeerId = useCallback(
+    (targetId: string) => {
+      if (!peerRef.current || !localStreamRef.current) return;
+      setIsConnecting(true);
+      setStatus("connecting");
+
+      const conn = peerRef.current.connect(targetId);
+      connectionRef.current = conn;
+      conn.on("data", (data: any) => {
+        setMessages((prev) => [...prev, mkMsg(String(data), "stranger")]);
+        if (mobilePanelRef.current !== "chat") setUnreadCount((n) => n + 1);
+      });
+
+      const call = peerRef.current.call(targetId, localStreamRef.current);
+      callRef.current = call;
+      call.on("stream", (remoteStream: any) => {
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = remoteStream;
+          remoteVideoRef.current.play().catch(() => {});
+        }
+        setIsConnected(true);
+        setIsConnecting(false);
+        setStatus("connected");
+      });
+      call.on("close", () => handleDisconnect(false));
+      call.on("error", () => {
+        setIsConnecting(false);
+        setStatus("disconnected");
+      });
+    },
+    [handleDisconnect],
+  );
+
+  // Start auto-search
+  const startSearch = async () => {
+    if (!peerReady || !actor) return;
+    setSearchError("");
+    setSearchSecondsLeft(SEARCH_DURATION);
+    pollCountRef.current = 0;
+    setStatus("searching");
+
+    try {
+      const sid = await actor.joinOmegleQueue("Unknown", BigInt(25));
+      sessionIdRef.current = sid;
+    } catch {
+      setSearchError("Could not join matchmaking queue. Try again.");
+      setStatus("idle");
+      return;
+    }
+
+    // Countdown timer
+    countdownTimerRef.current = setInterval(() => {
+      setSearchSecondsLeft((prev) => {
+        if (prev <= 1) {
+          clearSearchTimers();
+          setStatus("idle");
+          setSearchError("No stranger found. Try again.");
+          if (sessionIdRef.current && actor) {
+            actor.leaveOmegleQueue(sessionIdRef.current).catch(() => {});
+            sessionIdRef.current = null;
+          }
+          return SEARCH_DURATION;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    // Poll for match
+    pollTimerRef.current = setInterval(async () => {
+      if (pollCountRef.current >= MAX_POLLS) {
+        clearSearchTimers();
+        return;
+      }
+      pollCountRef.current++;
+      const sid = sessionIdRef.current;
+      if (!sid || !actor) return;
+
+      try {
+        const matchInfo = await actor.pollOmegleMatch(sid);
+        if (matchInfo?.peerId) {
+          clearSearchTimers();
+          setStatus("connecting");
+          setSearchSecondsLeft(SEARCH_DURATION);
+          connectToPeerId(matchInfo.peerId);
+        }
+      } catch {
+        // keep trying
+      }
+    }, POLL_INTERVAL);
+  };
+
+  const stopSearch = () => {
+    clearSearchTimers();
+    setStatus("idle");
+    setSearchSecondsLeft(SEARCH_DURATION);
+    setSearchError("");
+    if (sessionIdRef.current && actor) {
+      actor.leaveOmegleQueue(sessionIdRef.current).catch(() => {});
+      sessionIdRef.current = null;
+    }
+  };
 
   useEffect(() => {
     let peer: any = null;
@@ -130,7 +315,7 @@ export default function OmegleChat({ open: _open, onClose }: Props) {
 
       await ensurePeerJS();
 
-      peer = new window.Peer();
+      peer = new window.Peer(roomCode);
       peerRef.current = peer;
 
       peer.on("open", (id: string) => {
@@ -139,11 +324,25 @@ export default function OmegleChat({ open: _open, onClose }: Props) {
       });
 
       peer.on("error", (err: any) => {
-        console.error("PeerJS error:", err);
-        setCamError(`Connection error: ${err.message || err.type}`);
+        if (err.type === "unavailable-id") {
+          const newCode = generateRoomCode();
+          roomCodeRef.current = newCode;
+          peer.destroy();
+          const retryPeer = new window.Peer(newCode);
+          peerRef.current = retryPeer;
+          retryPeer.on("open", (id: string) => {
+            setMyPeerId(id);
+            setPeerReady(true);
+          });
+          retryPeer.on("call", handleIncomingCall);
+          retryPeer.on("connection", handleIncomingConn);
+        } else {
+          console.error("PeerJS error:", err);
+          setCamError(`Connection error: ${err.message || err.type}`);
+        }
       });
 
-      peer.on("call", (incomingCall: any) => {
+      const handleIncomingCall = (incomingCall: any) => {
         const stream = localStreamRef.current;
         if (!stream) return;
         incomingCall.answer(stream);
@@ -160,19 +359,31 @@ export default function OmegleChat({ open: _open, onClose }: Props) {
           setStatus("connected");
         });
         incomingCall.on("close", () => handleDisconnect(false));
-      });
+      };
 
-      peer.on("connection", (conn: any) => {
+      const handleIncomingConn = (conn: any) => {
         connectionRef.current = conn;
         conn.on("data", (data: any) => {
           setMessages((prev) => [...prev, mkMsg(String(data), "stranger")]);
+          if (mobilePanelRef.current !== "chat") setUnreadCount((n) => n + 1);
         });
-      });
+      };
+
+      peer.on("call", handleIncomingCall);
+      peer.on("connection", handleIncomingConn);
     };
 
     init();
 
     return () => {
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+      if (countdownTimerRef.current) {
+        clearInterval(countdownTimerRef.current);
+        countdownTimerRef.current = null;
+      }
       if (localStreamRef.current) {
         for (const t of (localStreamRef.current as MediaStream).getTracks())
           t.stop();
@@ -181,39 +392,12 @@ export default function OmegleChat({ open: _open, onClose }: Props) {
       connectionRef.current?.close();
       peerRef.current?.destroy();
     };
-  }, [handleDisconnect]);
+  }, [handleDisconnect, roomCode]);
 
   const connectToPeer = () => {
     const id = remotePeerId.trim();
     if (!id || !peerRef.current || !localStreamRef.current) return;
-
-    setIsConnecting(true);
-    setStatus("connecting");
-
-    const conn = peerRef.current.connect(id);
-    connectionRef.current = conn;
-    conn.on("data", (data: any) => {
-      setMessages((prev) => [...prev, mkMsg(String(data), "stranger")]);
-    });
-
-    const call = peerRef.current.call(id, localStreamRef.current);
-    callRef.current = call;
-
-    call.on("stream", (remoteStream: any) => {
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = remoteStream;
-        remoteVideoRef.current.play().catch(() => {});
-      }
-      setIsConnected(true);
-      setIsConnecting(false);
-      setStatus("connected");
-    });
-    call.on("close", () => handleDisconnect(false));
-    call.on("error", (err: any) => {
-      console.error("Call error:", err);
-      setIsConnecting(false);
-      setStatus("disconnected");
-    });
+    connectToPeerId(id);
   };
 
   const sendMessage = () => {
@@ -223,34 +407,44 @@ export default function OmegleChat({ open: _open, onClose }: Props) {
     setInputMsg("");
   };
 
-  const copyId = () => {
-    if (!myPeerId) return;
-    navigator.clipboard.writeText(myPeerId).then(() => {
+  const copyRoomCode = () => {
+    if (!roomCode) return;
+    navigator.clipboard.writeText(roomCode).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
   };
 
   const toggleCam = () => {
-    if (localStreamRef.current) {
+    if (localStreamRef.current)
       for (const t of (localStreamRef.current as MediaStream).getVideoTracks())
         t.enabled = !camOn;
-    }
     setCamOn((v) => !v);
   };
 
   const toggleMic = () => {
-    if (localStreamRef.current) {
+    if (localStreamRef.current)
       for (const t of (localStreamRef.current as MediaStream).getAudioTracks())
         t.enabled = !micOn;
-    }
     setMicOn((v) => !v);
+  };
+
+  const cycleMobilePanel = () => {
+    setMobilePanel((prev) => {
+      if (prev === null) return "chat";
+      if (prev === "chat") return "members";
+      return null;
+    });
   };
 
   const statusBadge = {
     idle: {
       label: "Waiting...",
       className: "bg-yellow-500/20 text-yellow-300 border-yellow-500/30",
+    },
+    searching: {
+      label: "Searching...",
+      className: "bg-blue-500/20 text-blue-300 border-blue-500/30",
     },
     connecting: {
       label: "Connecting...",
@@ -266,8 +460,230 @@ export default function OmegleChat({ open: _open, onClose }: Props) {
     },
   }[status];
 
+  // SVG countdown ring
+  const RING_R = 36;
+  const RING_CIRC = 2 * Math.PI * RING_R;
+  const ringProgress = searchSecondsLeft / SEARCH_DURATION;
+  const ringOffset = RING_CIRC * (1 - ringProgress);
+
+  // Members panel
+  const membersPanelContent = (
+    <div data-ocid="omegle.members_panel" className="flex flex-col h-full">
+      <ScrollArea className="flex-1 px-3 py-3">
+        <div className="space-y-2">
+          <div className="flex items-center gap-2.5 px-2 py-2 rounded-lg bg-white/5 border border-white/10">
+            <div className="relative flex-shrink-0">
+              <div className="w-9 h-9 rounded-full bg-gradient-to-br from-cyan-500 to-purple-600 flex items-center justify-center text-sm font-bold text-white">
+                {roomCode[0]}
+              </div>
+              <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-green-400 rounded-full border-2 border-black" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm font-semibold text-white truncate">
+                  You
+                </span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 font-medium">
+                  Host
+                </span>
+              </div>
+              <p className="text-[10px] text-white/40 font-mono">{roomCode}</p>
+            </div>
+          </div>
+
+          {isConnected ? (
+            <div className="flex items-center gap-2.5 px-2 py-2 rounded-lg bg-white/5 border border-white/10">
+              <div className="relative flex-shrink-0">
+                <div className="w-9 h-9 rounded-full bg-gradient-to-br from-pink-500 to-orange-500 flex items-center justify-center text-sm font-bold text-white">
+                  {remotePeerId ? remotePeerId[0].toUpperCase() : "G"}
+                </div>
+                <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-cyan-400 rounded-full border-2 border-black" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-sm font-semibold text-white truncate">
+                    Stranger
+                  </span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 font-medium">
+                    Peer
+                  </span>
+                </div>
+                <p className="text-[10px] text-white/40 font-mono">
+                  {remotePeerId
+                    ? remotePeerId.slice(0, 8) +
+                      (remotePeerId.length > 8 ? "..." : "")
+                    : "Guest"}
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div
+              data-ocid="omegle.empty_state"
+              className="text-center py-8 text-white/25 text-xs flex flex-col items-center gap-2"
+            >
+              <Users className="w-8 h-8 text-white/10" />
+              <span>No one else is here yet</span>
+            </div>
+          )}
+        </div>
+      </ScrollArea>
+    </div>
+  );
+
+  // Chat panel
+  const chatPanelContent = (
+    <>
+      <ScrollArea className="flex-1 px-3 py-2">
+        {messages.length === 0 ? (
+          <div className="text-center py-8 text-white/25 text-xs">
+            No messages yet. Connect to start chatting!
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {messages.map((msg) => (
+              <div
+                key={msg.id}
+                className={`flex flex-col gap-0.5 ${msg.from === "me" ? "items-end" : "items-start"}`}
+              >
+                <div
+                  className={`max-w-[85%] px-3 py-1.5 rounded-2xl text-xs leading-relaxed ${
+                    msg.from === "me"
+                      ? "bg-gradient-to-br from-cyan-600 to-purple-700 text-white rounded-br-sm"
+                      : msg.text === "Stranger has disconnected."
+                        ? "bg-red-900/40 text-red-300 italic border border-red-500/20 rounded-bl-sm"
+                        : "bg-white/10 text-white/90 rounded-bl-sm"
+                  }`}
+                >
+                  {msg.text}
+                </div>
+                <span className="text-[9px] text-white/25">{msg.time}</span>
+              </div>
+            ))}
+            <div ref={messagesEndRef} />
+          </div>
+        )}
+      </ScrollArea>
+      <div className="px-3 py-2 border-t border-white/10 flex gap-2 flex-shrink-0">
+        <Input
+          data-ocid="omegle.search_input"
+          value={inputMsg}
+          onChange={(e) => setInputMsg(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+          placeholder={isConnected ? "Type a message..." : "Connect first..."}
+          disabled={!isConnected}
+          className="flex-1 bg-white/5 border-white/10 text-white placeholder:text-white/25 text-xs h-8 focus:border-cyan-500/30"
+        />
+        <Button
+          data-ocid="omegle.submit_button"
+          size="icon"
+          onClick={sendMessage}
+          disabled={!isConnected || !inputMsg.trim()}
+          className="w-8 h-8 flex-shrink-0 bg-cyan-600 hover:bg-cyan-500 border-0"
+        >
+          <Send className="w-3 h-3" />
+        </Button>
+      </div>
+    </>
+  );
+
+  const desktopRightPanel = (
+    <div className="w-64 flex-col border-l border-white/10 bg-black/40 flex-shrink-0 hidden sm:flex">
+      <div className="flex border-b border-white/10 flex-shrink-0">
+        <button
+          type="button"
+          data-ocid="omegle.tab"
+          onClick={() => setActiveTab("chat")}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-colors ${
+            activeTab === "chat"
+              ? "text-cyan-400 border-b-2 border-cyan-500 bg-cyan-500/5"
+              : "text-white/40 hover:text-white/70"
+          }`}
+        >
+          <MessageSquare className="w-3.5 h-3.5" />
+          Chat
+          {unreadCount > 0 && activeTab !== "chat" && (
+            <span className="min-w-[14px] h-[14px] bg-pink-500 rounded-full border border-black flex items-center justify-center text-[9px] font-bold text-white px-0.5">
+              {unreadCount > 9 ? "9+" : unreadCount}
+            </span>
+          )}
+        </button>
+        <button
+          type="button"
+          data-ocid="omegle.tab"
+          onClick={() => setActiveTab("members")}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-colors ${
+            activeTab === "members"
+              ? "text-cyan-400 border-b-2 border-cyan-500 bg-cyan-500/5"
+              : "text-white/40 hover:text-white/70"
+          }`}
+        >
+          <Users className="w-3.5 h-3.5" />
+          Members
+          <span className="min-w-[14px] h-[14px] bg-white/10 rounded-full flex items-center justify-center text-[9px] text-white/50 px-0.5">
+            {isConnected ? 2 : 1}
+          </span>
+        </button>
+      </div>
+      <div className="flex flex-col flex-1 overflow-hidden">
+        {activeTab === "chat" ? chatPanelContent : membersPanelContent}
+      </div>
+    </div>
+  );
+
+  const mobileOverlayPanel = mobilePanel !== null && (
+    <div
+      data-ocid="omegle.panel"
+      className="sm:hidden absolute top-0 right-0 bottom-0 w-[280px] flex flex-col bg-black/95 border-l border-white/10 z-50"
+      style={{ animation: "slideInRight 0.2s ease-out" }}
+    >
+      <div className="flex border-b border-white/10 flex-shrink-0">
+        <button
+          type="button"
+          data-ocid="omegle.tab"
+          onClick={() => setMobilePanel("chat")}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-colors ${
+            mobilePanel === "chat"
+              ? "text-cyan-400 border-b-2 border-cyan-500 bg-cyan-500/5"
+              : "text-white/40 hover:text-white/70"
+          }`}
+        >
+          <MessageSquare className="w-3.5 h-3.5" />
+          Chat
+        </button>
+        <button
+          type="button"
+          data-ocid="omegle.tab"
+          onClick={() => setMobilePanel("members")}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-colors ${
+            mobilePanel === "members"
+              ? "text-cyan-400 border-b-2 border-cyan-500 bg-cyan-500/5"
+              : "text-white/40 hover:text-white/70"
+          }`}
+        >
+          <Users className="w-3.5 h-3.5" />
+          Members
+        </button>
+        <button
+          type="button"
+          onClick={() => setMobilePanel(null)}
+          className="w-10 flex items-center justify-center text-white/40 hover:text-white/80 transition-colors"
+          data-ocid="omegle.close_button"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      <div className="flex flex-col flex-1 overflow-hidden">
+        {mobilePanel === "chat" ? chatPanelContent : membersPanelContent}
+      </div>
+    </div>
+  );
+
+  const isActiveCall = isConnected || isConnecting || status === "searching";
+
+  if (!open) return null;
+
   return (
-    <div className="flex flex-col h-full bg-[#0a0a0f] text-white overflow-hidden">
+    <div className="fixed inset-0 z-50 flex flex-col bg-[#0a0a0f] text-white overflow-hidden">
       {/* Top Bar */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-black/40 backdrop-blur-sm flex-shrink-0">
         <div className="flex items-center gap-3">
@@ -283,28 +699,61 @@ export default function OmegleChat({ open: _open, onClose }: Props) {
             </h2>
             <div className="flex items-center gap-1 text-xs text-white/50">
               <Users className="w-3 h-3" />
-              <span>1,234+ online</span>
+              <span>Live worldwide</span>
             </div>
           </div>
+          {/* Game shortcut buttons */}
+          <div className="flex items-center gap-1.5 ml-3">
+            <button
+              type="button"
+              onClick={() => setShowLudo(true)}
+              title="Play Ludo"
+              data-ocid="omegle.ludo_button"
+              className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:scale-110"
+              style={{
+                background: "rgba(34,197,94,0.15)",
+                border: "1px solid rgba(34,197,94,0.4)",
+                boxShadow: "0 0 8px rgba(34,197,94,0.3)",
+              }}
+            >
+              <Gamepad2 className="w-4 h-4" style={{ color: "#86efac" }} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowTtt(true)}
+              title="Tic-Tac-Toe"
+              data-ocid="omegle.ttt_button"
+              className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:scale-110"
+              style={{
+                background: "rgba(168,85,247,0.15)",
+                border: "1px solid rgba(168,85,247,0.4)",
+                boxShadow: "0 0 8px rgba(168,85,247,0.3)",
+              }}
+            >
+              <Grid3X3 className="w-4 h-4" style={{ color: "#d8b4fe" }} />
+            </button>
+          </div>
         </div>
-
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-green-500/10 border border-green-500/20 text-green-400">
             <Shield className="w-3 h-3" />
-            <span>Safe Chat</span>
+            <span className="hidden sm:inline">Safe Chat</span>
           </div>
           <Badge className={`text-xs border ${statusBadge.className}`}>
-            {status === "connecting" ? (
+            {status === "connecting" || status === "searching" ? (
               <span className="flex items-center gap-1">
-                <Wifi className="w-3 h-3 animate-pulse" /> {statusBadge.label}
+                <Wifi className="w-3 h-3 animate-pulse" />
+                {statusBadge.label}
               </span>
             ) : status === "connected" ? (
               <span className="flex items-center gap-1">
-                <Wifi className="w-3 h-3" /> {statusBadge.label}
+                <Wifi className="w-3 h-3" />
+                {statusBadge.label}
               </span>
             ) : status === "disconnected" ? (
               <span className="flex items-center gap-1">
-                <WifiOff className="w-3 h-3" /> {statusBadge.label}
+                <WifiOff className="w-3 h-3" />
+                {statusBadge.label}
               </span>
             ) : (
               statusBadge.label
@@ -314,6 +763,7 @@ export default function OmegleChat({ open: _open, onClose }: Props) {
             <button
               type="button"
               onClick={onClose}
+              data-ocid="omegle.close_button"
               className="w-7 h-7 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 transition-colors ml-1"
             >
               <X className="w-3.5 h-3.5" />
@@ -331,10 +781,11 @@ export default function OmegleChat({ open: _open, onClose }: Props) {
         </div>
       )}
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden relative min-h-0">
         {/* Left: Video + Controls */}
-        <div className="flex flex-col flex-1 min-w-0">
-          <div className="relative flex-1 bg-black overflow-hidden">
+        <div className="flex flex-col flex-1 min-w-0 min-h-0">
+          {/* Video area */}
+          <div className="relative flex-1 min-h-0 bg-black overflow-hidden">
             {/* biome-ignore lint/a11y/useMediaCaption: live WebRTC video call stream */}
             <video
               ref={remoteVideoRef}
@@ -345,31 +796,125 @@ export default function OmegleChat({ open: _open, onClose }: Props) {
             />
 
             {!isConnected && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-4">
-                <div className="w-24 h-24 rounded-full border-2 border-dashed border-white/20 flex items-center justify-center">
-                  <Video className="w-10 h-10 text-white/20" />
-                </div>
-                <p className="text-white/40 text-sm">
-                  {isConnecting
-                    ? "Connecting to peer..."
-                    : "Enter a Room ID below to connect"}
-                </p>
-                {isConnecting && (
-                  <div className="flex gap-1">
-                    {[0, 1, 2].map((i) => (
-                      <span
-                        key={i}
-                        className="w-2 h-2 rounded-full bg-cyan-400 animate-bounce"
-                        style={{ animationDelay: `${i * 0.15}s` }}
-                      />
-                    ))}
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-4">
+                {status === "searching" ? (
+                  /* Countdown ring */
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="relative w-24 h-24">
+                      <svg
+                        className="w-24 h-24 -rotate-90"
+                        viewBox="0 0 88 88"
+                        aria-label="Search countdown timer"
+                        role="img"
+                      >
+                        <circle
+                          cx="44"
+                          cy="44"
+                          r={RING_R}
+                          fill="none"
+                          stroke="rgba(255,255,255,0.08)"
+                          strokeWidth="6"
+                        />
+                        <circle
+                          cx="44"
+                          cy="44"
+                          r={RING_R}
+                          fill="none"
+                          stroke="url(#searchGrad)"
+                          strokeWidth="6"
+                          strokeLinecap="round"
+                          strokeDasharray={RING_CIRC}
+                          strokeDashoffset={ringOffset}
+                          style={{
+                            transition: "stroke-dashoffset 0.9s linear",
+                          }}
+                        />
+                        <defs>
+                          <linearGradient
+                            id="searchGrad"
+                            x1="0%"
+                            y1="0%"
+                            x2="100%"
+                            y2="0%"
+                          >
+                            <stop offset="0%" stopColor="#22d3ee" />
+                            <stop offset="100%" stopColor="#a855f7" />
+                          </linearGradient>
+                        </defs>
+                      </svg>
+                      <div className="absolute inset-0 flex items-center justify-center rotate-0">
+                        <span className="text-2xl font-bold font-mono text-cyan-300">
+                          {searchSecondsLeft}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-white/60 text-sm">
+                      <Timer className="w-4 h-4 text-cyan-400" />
+                      <span>Searching for someone</span>
+                      <span className="flex gap-0.5">
+                        {[0, 1, 2].map((i) => (
+                          <span
+                            key={i}
+                            className="w-1 h-1 rounded-full bg-cyan-400 animate-bounce"
+                            style={{ animationDelay: `${i * 0.2}s` }}
+                          />
+                        ))}
+                      </span>
+                    </div>
+                    <p className="text-xs text-white/30 text-center">
+                      Connecting you with a real user worldwide
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="w-20 h-20 rounded-full border-2 border-dashed border-white/20 flex items-center justify-center">
+                      <Video className="w-9 h-9 text-white/20" />
+                    </div>
+                    <p className="text-white/40 text-sm text-center">
+                      {isConnecting
+                        ? "Connecting to peer..."
+                        : "Find a stranger or use Room Code"}
+                    </p>
+                    {isConnecting && (
+                      <div className="flex gap-1">
+                        {[0, 1, 2].map((i) => (
+                          <span
+                            key={i}
+                            className="w-2 h-2 rounded-full bg-cyan-400 animate-bounce"
+                            style={{ animationDelay: `${i * 0.15}s` }}
+                          />
+                        ))}
+                      </div>
+                    )}
+                    {searchError && (
+                      <div
+                        data-ocid="omegle.error_state"
+                        className="mt-2 px-4 py-2 rounded-lg bg-red-900/40 border border-red-500/30 text-red-300 text-xs text-center"
+                      >
+                        {searchError}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
             )}
 
+            {/* ── EXIT button – top-right of video, always shown when active ── */}
+            {isActiveCall && (
+              <button
+                type="button"
+                data-ocid="omegle.close_button"
+                onClick={() => handleDisconnect(true)}
+                className="absolute top-3 right-3 z-30 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 active:bg-red-700 text-white text-xs font-semibold shadow-lg shadow-red-900/50 transition-colors"
+              >
+                <X className="w-3.5 h-3.5" />
+                Exit
+              </button>
+            )}
+
             {/* Local PiP */}
             <div className="absolute bottom-3 right-3 w-28 h-20 sm:w-36 sm:h-24 rounded-xl overflow-hidden border-2 border-cyan-500/50 shadow-lg shadow-cyan-500/20">
+              {/* biome-ignore lint/a11y/useMediaCaption: local camera preview */}
               <video
                 ref={localVideoRef}
                 autoPlay
@@ -384,6 +929,54 @@ export default function OmegleChat({ open: _open, onClose }: Props) {
               )}
             </div>
 
+            {/* Add User overlay panel */}
+            {showAddUser && (
+              <div
+                data-ocid="omegle.modal"
+                className="absolute bottom-[5.5rem] left-1/2 -translate-x-1/2 z-40 w-72 rounded-2xl bg-black/90 border border-white/15 shadow-2xl backdrop-blur-sm p-4 flex flex-col gap-3"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-white/70">
+                    Invite someone to join
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddUser(false)}
+                    className="w-6 h-6 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+                <div className="flex flex-col items-center gap-1 py-2">
+                  <span className="text-[10px] text-white/40 uppercase tracking-widest">
+                    Your Room Code
+                  </span>
+                  <span
+                    className="text-2xl font-mono font-bold tracking-[0.15em] text-cyan-300"
+                    style={{
+                      textShadow:
+                        "0 0 10px rgba(6,182,212,0.7), 0 0 20px rgba(6,182,212,0.3)",
+                    }}
+                  >
+                    {roomCode}
+                  </span>
+                </div>
+                <Button
+                  size="sm"
+                  onClick={copyRoomCode}
+                  className="w-full gap-2 bg-cyan-600/20 hover:bg-cyan-600/40 text-cyan-300 border border-cyan-500/30 text-xs h-8"
+                >
+                  {copied ? (
+                    <Check className="w-3 h-3" />
+                  ) : (
+                    <Copy className="w-3 h-3" />
+                  )}
+                  {copied ? "Copied!" : "Copy Room Code"}
+                </Button>
+              </div>
+            )}
+
+            {/* Bottom-left video controls overlay */}
             <div className="absolute bottom-3 left-3 flex gap-2">
               <button
                 type="button"
@@ -415,144 +1008,183 @@ export default function OmegleChat({ open: _open, onClose }: Props) {
                   <MicOff className="w-4 h-4 text-red-300" />
                 )}
               </button>
+
+              {/* Add User button – only when connected */}
+              {isConnected && (
+                <button
+                  type="button"
+                  data-ocid="omegle.open_modal_button"
+                  onClick={() => setShowAddUser((v) => !v)}
+                  className="w-9 h-9 rounded-full flex items-center justify-center border border-purple-500/50 bg-purple-600/30 hover:bg-purple-600/50 transition-all"
+                >
+                  <UserPlus className="w-4 h-4 text-purple-300" />
+                </button>
+              )}
+
+              {/* Chat/Members toggle – mobile only */}
+              <button
+                type="button"
+                onClick={cycleMobilePanel}
+                data-ocid="omegle.toggle"
+                className={`sm:hidden relative w-9 h-9 rounded-full flex items-center justify-center border transition-all ${
+                  mobilePanel !== null
+                    ? "bg-cyan-500/30 border-cyan-500/50"
+                    : "bg-white/10 border-white/20 hover:bg-white/20"
+                }`}
+              >
+                {mobilePanel === "members" ? (
+                  <Users className="w-4 h-4" />
+                ) : (
+                  <MessageSquare className="w-4 h-4" />
+                )}
+                {unreadCount > 0 && mobilePanel !== "chat" && (
+                  <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] bg-pink-500 rounded-full border border-black flex items-center justify-center text-[9px] font-bold text-white px-0.5">
+                    {unreadCount > 9 ? "9+" : unreadCount}
+                  </span>
+                )}
+              </button>
             </div>
           </div>
 
-          {/* Room ID + Connect Controls */}
-          <div className="px-4 py-3 space-y-3 bg-black/60 border-t border-white/10 flex-shrink-0">
-            <div className="flex items-center gap-2">
-              <div className="flex-1 px-3 py-2 rounded-lg bg-white/5 border border-cyan-500/30 flex items-center gap-2 min-w-0">
-                <span className="text-xs text-cyan-400 font-medium whitespace-nowrap">
-                  Your ID:
-                </span>
-                <span className="text-xs text-white/80 font-mono truncate flex-1">
-                  {myPeerId || (peerReady ? "" : "Initializing...")}
-                </span>
-              </div>
+          {/* ── Bottom Controls Bar ── */}
+          <div className="px-3 py-2.5 space-y-2.5 bg-black/60 border-t border-white/10 flex-shrink-0 overflow-hidden">
+            {/* Find Stranger button / Stop searching */}
+            {status === "idle" || status === "disconnected" ? (
               <Button
                 data-ocid="omegle.primary_button"
-                size="sm"
-                onClick={copyId}
-                disabled={!myPeerId}
-                className="flex-shrink-0 gap-1.5 bg-cyan-600 hover:bg-cyan-500 text-white border-0 text-xs"
+                onClick={startSearch}
+                disabled={!peerReady}
+                className="w-full h-10 gap-2 font-semibold text-sm bg-gradient-to-r from-green-600 to-emerald-500 hover:from-green-500 hover:to-emerald-400 border-0 text-white shadow-lg shadow-green-900/40"
               >
-                {copied ? (
-                  <Check className="w-3 h-3" />
-                ) : (
-                  <Copy className="w-3 h-3" />
-                )}
-                {copied ? "Copied!" : "Copy"}
+                <Video className="w-4 h-4" />
+                Find Stranger (120s)
               </Button>
-            </div>
+            ) : status === "searching" ? (
+              <Button
+                data-ocid="omegle.cancel_button"
+                onClick={stopSearch}
+                className="w-full h-10 gap-2 font-semibold text-sm bg-gradient-to-r from-red-700 to-rose-600 hover:from-red-600 hover:to-rose-500 border-0 text-white"
+              >
+                <StopCircle className="w-4 h-4" />
+                Stop Searching
+              </Button>
+            ) : isConnected ? (
+              <Button
+                data-ocid="omegle.delete_button"
+                onClick={() => handleDisconnect(true)}
+                className="w-full h-10 gap-2 font-semibold text-sm bg-red-700 hover:bg-red-600 border-0 text-white"
+              >
+                <PhoneOff className="w-4 h-4" />
+                Disconnect
+              </Button>
+            ) : null}
 
-            <div className="flex gap-2">
-              <Input
-                data-ocid="omegle.input"
-                value={remotePeerId}
-                onChange={(e) => setRemotePeerId(e.target.value)}
-                onKeyDown={(e) =>
-                  e.key === "Enter" && !isConnected && connectToPeer()
-                }
-                placeholder="Paste friend's Room ID here..."
-                className="flex-1 bg-white/5 border-white/20 text-white placeholder:text-white/30 text-xs h-9 focus:border-cyan-500/50"
-              />
-              {!isConnected ? (
-                <Button
-                  data-ocid="omegle.secondary_button"
-                  size="sm"
-                  onClick={connectToPeer}
-                  disabled={!remotePeerId.trim() || isConnecting || !peerReady}
-                  className="flex-shrink-0 gap-1.5 bg-green-600 hover:bg-green-500 text-white border-0 text-xs h-9 px-3"
+            {/* Collapsible Room Code section */}
+            <div>
+              <button
+                type="button"
+                onClick={() => setShowRoomConnect((v) => !v)}
+                className="w-full flex items-center justify-between text-[10px] text-white/40 hover:text-white/60 transition-colors py-0.5 px-1"
+              >
+                <span className="uppercase tracking-widest">
+                  Connect with Room Code
+                </span>
+                <span
+                  className={`transition-transform ${showRoomConnect ? "rotate-180" : ""}`}
                 >
-                  <Phone className="w-3 h-3" />
-                  {isConnecting ? "Calling..." : "Connect"}
-                </Button>
-              ) : (
-                <Button
-                  data-ocid="omegle.delete_button"
-                  size="sm"
-                  onClick={() => handleDisconnect(true)}
-                  className="flex-shrink-0 gap-1.5 bg-red-600 hover:bg-red-500 text-white border-0 text-xs h-9 px-3"
-                >
-                  <PhoneOff className="w-3 h-3" />
-                  Disconnect
-                </Button>
+                  ▾
+                </span>
+              </button>
+
+              {showRoomConnect && (
+                <div className="mt-2 space-y-2">
+                  {/* Room code display */}
+                  <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-black/60 border border-cyan-500/30">
+                    <span
+                      className="text-lg font-mono font-bold tracking-[0.15em] text-cyan-300"
+                      style={{ textShadow: "0 0 10px rgba(6,182,212,0.7)" }}
+                    >
+                      {roomCode}
+                    </span>
+                    <Button
+                      data-ocid="omegle.secondary_button"
+                      size="sm"
+                      onClick={copyRoomCode}
+                      className="h-7 px-2 gap-1 bg-cyan-600/20 hover:bg-cyan-600/40 text-cyan-300 border border-cyan-500/30 text-xs"
+                    >
+                      {copied ? (
+                        <Check className="w-3 h-3" />
+                      ) : (
+                        <Copy className="w-3 h-3" />
+                      )}
+                      {copied ? "Copied!" : "Copy"}
+                    </Button>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Input
+                      data-ocid="omegle.input"
+                      value={remotePeerId}
+                      onChange={(e) => setRemotePeerId(e.target.value)}
+                      onKeyDown={(e) =>
+                        e.key === "Enter" && !isConnected && connectToPeer()
+                      }
+                      placeholder="Paste friend's Room Code..."
+                      className="flex-1 bg-white/5 border-white/20 text-white placeholder:text-white/30 text-xs h-9 focus:border-cyan-500/50"
+                    />
+                    {!isConnected ? (
+                      <Button
+                        data-ocid="omegle.secondary_button"
+                        size="sm"
+                        onClick={connectToPeer}
+                        disabled={
+                          !remotePeerId.trim() || isConnecting || !peerReady
+                        }
+                        className="flex-shrink-0 gap-1.5 bg-green-600 hover:bg-green-500 text-white border-0 text-xs h-9 px-3"
+                      >
+                        <Phone className="w-3 h-3" />
+                        {isConnecting ? "Calling..." : "Connect"}
+                      </Button>
+                    ) : (
+                      <Button
+                        data-ocid="omegle.delete_button"
+                        size="sm"
+                        onClick={() => handleDisconnect(true)}
+                        className="flex-shrink-0 gap-1.5 bg-red-600 hover:bg-red-500 text-white border-0 text-xs h-9 px-3"
+                      >
+                        <PhoneOff className="w-3 h-3" />
+                        Disconnect
+                      </Button>
+                    )}
+                  </div>
+
+                  <p className="text-[10px] text-white/25 text-center">
+                    Share your Room Code with a friend. When they enter it and
+                    click Connect, you'll be live together.
+                  </p>
+                </div>
               )}
             </div>
-
-            <p className="text-[10px] text-white/30 text-center">
-              Share your Room ID with a friend. When they enter it and click
-              Connect, you'll be live together.
-            </p>
           </div>
         </div>
 
-        {/* Right: Chat Panel */}
-        <div className="w-64 flex-col border-l border-white/10 bg-black/40 flex-shrink-0 hidden sm:flex">
-          <div className="px-3 py-2 border-b border-white/10 flex-shrink-0">
-            <h3 className="text-xs font-semibold text-white/60 uppercase tracking-wider">
-              Chat
-            </h3>
-          </div>
+        {/* Desktop right panel */}
+        {desktopRightPanel}
 
-          <ScrollArea className="flex-1 px-3 py-2">
-            {messages.length === 0 ? (
-              <div
-                data-ocid="omegle.empty_state"
-                className="text-center py-8 text-white/25 text-xs"
-              >
-                No messages yet. Connect to start chatting!
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {messages.map((msg) => (
-                  <div
-                    key={msg.id}
-                    className={`flex flex-col gap-0.5 ${msg.from === "me" ? "items-end" : "items-start"}`}
-                  >
-                    <div
-                      className={`max-w-[85%] px-3 py-1.5 rounded-2xl text-xs leading-relaxed ${
-                        msg.from === "me"
-                          ? "bg-gradient-to-br from-cyan-600 to-purple-700 text-white rounded-br-sm"
-                          : msg.text === "Stranger has disconnected."
-                            ? "bg-red-900/40 text-red-300 italic border border-red-500/20 rounded-bl-sm"
-                            : "bg-white/10 text-white/90 rounded-bl-sm"
-                      }`}
-                    >
-                      {msg.text}
-                    </div>
-                    <span className="text-[9px] text-white/25">{msg.time}</span>
-                  </div>
-                ))}
-                <div ref={messagesEndRef} />
-              </div>
-            )}
-          </ScrollArea>
-
-          <div className="px-3 py-2 border-t border-white/10 flex gap-2 flex-shrink-0">
-            <Input
-              data-ocid="omegle.search_input"
-              value={inputMsg}
-              onChange={(e) => setInputMsg(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && sendMessage()}
-              placeholder={
-                isConnected ? "Type a message..." : "Connect first..."
-              }
-              disabled={!isConnected}
-              className="flex-1 bg-white/5 border-white/10 text-white placeholder:text-white/25 text-xs h-8 focus:border-cyan-500/30"
-            />
-            <Button
-              data-ocid="omegle.submit_button"
-              size="icon"
-              onClick={sendMessage}
-              disabled={!isConnected || !inputMsg.trim()}
-              className="w-8 h-8 flex-shrink-0 bg-cyan-600 hover:bg-cyan-500 border-0"
-            >
-              <Send className="w-3 h-3" />
-            </Button>
-          </div>
-        </div>
+        {/* Mobile overlay panel */}
+        {mobileOverlayPanel}
       </div>
+
+      <style>{`
+        @keyframes slideInRight {
+          from { transform: translateX(100%); opacity: 0; }
+          to   { transform: translateX(0);    opacity: 1; }
+        }
+      `}</style>
+
+      {/* Game overlays */}
+      <LudoGame open={showLudo} onClose={() => setShowLudo(false)} />
+      <TicTacToe3D open={showTtt} onClose={() => setShowTtt(false)} />
     </div>
   );
 }

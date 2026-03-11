@@ -1,25 +1,38 @@
-# Reckon Messenger
+# Reckon
 
 ## Current State
-- OmegleChat component uses an iframe to embed omegleweb.io, which refuses to load due to X-Frame-Options/CSP blocking ("refuse to connect" error)
-- Ludo 2D Canvas tokens are drawn but appear small and lack strong visual presence
+OmegleChat.tsx has Room ID-based PeerJS video chat with:
+- Copy/paste Room Code to connect manually
+- Chat panel + Members panel (desktop tabs, mobile overlay)
+- Camera/mic toggle buttons
+- Status badge, Safe Chat badge
+- Disconnect button at bottom
+- No exit button on video overlay
+- No auto-matching / pairing timer
+- No "Add User" button during live call
 
 ## Requested Changes (Diff)
 
 ### Add
-- WebRTC signaling in Motoko backend: waiting queue, matched pairs, offer/answer/ICE candidate exchange
-- OmegleChat: full browser-based WebRTC peer-to-peer random video chat (no iframe), with local camera preview, stranger video, city/country/age display, next/disconnect, animated connection effects
-- Ludo tokens: 3D gradient fill, neon glow ring, larger radius, pulsing scale animation on movable tokens, floating shadow
+- **120-second pairing timer**: "Find Stranger" button starts auto-matching countdown (120s). Uses backend queue polling. Shows animated countdown ring + seconds remaining. On timeout, shows "No one found - try again" message.
+- **Exit button fixed at top of video**: Large visible "Exit" button pinned to top-right of the video area when in a call or searching, always accessible.
+- **Add User button during live call**: Button visible during connected state. Opens a small dialog/overlay showing the user's Room Code with a copy button so they can invite a third person.
+- **Auto-match mode**: Backend queue join/poll for random stranger pairing as alternative to manual Room Code entry.
 
 ### Modify
-- OmegleChat.tsx: replace iframe with WebRTC implementation using backend signaling
-- LudoGame.tsx: enhance drawTokens to use radial gradient, stronger glow, larger size, animated bounce effect
-- main.mo: add signaling types and functions
+- Layout fixes: video area takes full height, controls bar at bottom is compact, no overflow issues on mobile
+- Exit button moved to top-right of video overlay (absolute position)
+- Bottom controls reorganized: cam, mic, add-user, exit grouped cleanly
+- Pairing UI shows timer ring animation during search
+- Room Code connect kept as secondary option
 
 ### Remove
-- iframe embed of omegleweb.io
+- Nothing removed, existing manual Room Code flow kept alongside auto-match
 
 ## Implementation Plan
-1. Add Motoko signaling: joinQueue, leaveQueue, pollMatch, sendSignal, getSignals functions
-2. Rewrite OmegleChat to use getUserMedia + RTCPeerConnection + backend polling for signaling
-3. Enhance LudoGame drawTokens with radial gradient, bigger radius, 3D shadow, neon glow pulse
+1. Add `searchTimer` state (0-120) and `searchMode` state ("auto" | "manual" | null)
+2. Auto-match: on "Find Stranger" click, call backend `joinOmegleQueue` + poll `getOmegleMatch`, start 120s countdown interval
+3. On 120s timeout: stop polling, show timeout message, clear state
+4. Exit button: absolute top-right on video container, always visible when status != idle, calls handleDisconnect
+5. Add User button: appears in bottom controls when connected, opens inline overlay showing roomCode + copy
+6. Layout: fix flex structure so video fills space properly on all screen sizes
