@@ -662,8 +662,6 @@ export default function OmegleChat({ open, onClose }: OmegleChatProps) {
     try {
       sid = await (actor as any).joinOmegleQueue(userCountry, BigInt(userAge));
       sidRef.current = sid;
-      // Broadcast our PeerJS ID via signal channel
-      await (actor as any).sendOmegleSignal(sid, "peerId", myPeerId);
     } catch (_err) {
       setPermError(
         "Could not connect to matchmaking server. Please try again.",
@@ -701,9 +699,18 @@ export default function OmegleChat({ open, onClose }: OmegleChatProps) {
         const peerAge = Number(match.peerAge);
         const isInitiator = match.isInitiator as boolean;
 
+        // Now that we're matched, broadcast our PeerJS ID
+        try {
+          await (actor as any).sendOmegleSignal(
+            sidRef.current,
+            "peerId",
+            myPeerId,
+          );
+        } catch (_) {}
+
         // Get partner's PeerJS ID
         let partnerPeerId = "";
-        for (let attempt = 0; attempt < 25; attempt++) {
+        for (let attempt = 0; attempt < 40; attempt++) {
           try {
             const signals = (await (actor as any).getOmegleSignals(
               sidRef.current,
