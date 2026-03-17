@@ -6,6 +6,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Check,
   Copy,
+  FlipHorizontal,
   Gamepad2,
   Grid3X3,
   MessageSquare,
@@ -26,6 +27,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useReckon } from "../App";
 import { useActor } from "../hooks/useActor";
 import LudoGame from "./LudoGame";
 import TicTacToe3D from "./TicTacToe3D";
@@ -100,6 +102,9 @@ function ensurePeerJS(): Promise<void> {
 
 export default function OmegleChat({ open, onClose }: Props) {
   const { actor } = useActor();
+  const { currentUser } = useReckon();
+  const currentUserRef = useRef(currentUser);
+  currentUserRef.current = currentUser;
 
   const roomCodeRef = useRef<string | null>(null);
   if (!roomCodeRef.current) roomCodeRef.current = generateRoomCode();
@@ -111,6 +116,7 @@ export default function OmegleChat({ open, onClose }: Props) {
   const [isConnecting, setIsConnecting] = useState(false);
   const [camOn, setCamOn] = useState(true);
   const [micOn, setMicOn] = useState(true);
+  const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMsg, setInputMsg] = useState("");
   const [copied, setCopied] = useState(false);
@@ -124,6 +130,13 @@ export default function OmegleChat({ open, onClose }: Props) {
   const [showAddUser, setShowAddUser] = useState(false);
   const [showLudo, setShowLudo] = useState(false);
   const [showTtt, setShowTtt] = useState(false);
+  const [peerMeta, setPeerMeta] = useState<{
+    name: string;
+    city: string;
+    country: string;
+  } | null>(null);
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [bottomChatInput, setBottomChatInput] = useState("");
 
   // Search / countdown state
   const [searchSecondsLeft, setSearchSecondsLeft] = useState(SEARCH_DURATION);
@@ -198,7 +211,35 @@ export default function OmegleChat({ open, onClose }: Props) {
 
       const conn = peerRef.current.connect(targetId);
       connectionRef.current = conn;
+      conn.on("open", () => {
+        try {
+          conn.send(
+            JSON.stringify({
+              type: "meta",
+              name: currentUserRef.current?.name || "User",
+              city: currentUserRef.current?.city || "",
+              country: selectedCountry,
+            }),
+          );
+        } catch {}
+      });
       conn.on("data", (data: any) => {
+        try {
+          const parsed = JSON.parse(String(data));
+          if (parsed.type === "meta") {
+            setPeerMeta({
+              name: parsed.name || "Stranger",
+              city: parsed.city || "",
+              country: parsed.country || "",
+            });
+            return;
+          }
+          if (parsed.type === "chat") {
+            setMessages((prev) => [...prev, mkMsg(parsed.text, "stranger")]);
+            if (mobilePanelRef.current !== "chat") setUnreadCount((n) => n + 1);
+            return;
+          }
+        } catch {}
         setMessages((prev) => [...prev, mkMsg(String(data), "stranger")]);
         if (mobilePanelRef.current !== "chat") setUnreadCount((n) => n + 1);
       });
@@ -363,7 +404,36 @@ export default function OmegleChat({ open, onClose }: Props) {
 
       const handleIncomingConn = (conn: any) => {
         connectionRef.current = conn;
+        conn.on("open", () => {
+          try {
+            conn.send(
+              JSON.stringify({
+                type: "meta",
+                name: currentUserRef.current?.name || "User",
+                city: currentUserRef.current?.city || "",
+                country: "India",
+              }),
+            );
+          } catch {}
+        });
         conn.on("data", (data: any) => {
+          try {
+            const parsed = JSON.parse(String(data));
+            if (parsed.type === "meta") {
+              setPeerMeta({
+                name: parsed.name || "Stranger",
+                city: parsed.city || "",
+                country: parsed.country || "",
+              });
+              return;
+            }
+            if (parsed.type === "chat") {
+              setMessages((prev) => [...prev, mkMsg(parsed.text, "stranger")]);
+              if (mobilePanelRef.current !== "chat")
+                setUnreadCount((n) => n + 1);
+              return;
+            }
+          } catch {}
           setMessages((prev) => [...prev, mkMsg(String(data), "stranger")]);
           if (mobilePanelRef.current !== "chat") setUnreadCount((n) => n + 1);
         });
@@ -402,7 +472,9 @@ export default function OmegleChat({ open, onClose }: Props) {
 
   const sendMessage = () => {
     if (!inputMsg.trim() || !connectionRef.current) return;
-    connectionRef.current.send(inputMsg.trim());
+    connectionRef.current.send(
+      JSON.stringify({ type: "chat", text: inputMsg.trim() }),
+    );
     setMessages((prev) => [...prev, mkMsg(inputMsg.trim(), "me")]);
     setInputMsg("");
   };
@@ -413,6 +485,31 @@ export default function OmegleChat({ open, onClose }: Props) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
+  };
+
+  const generateShareLink = () =>
+    `${window.location.origin}/?room=${roomCodeRef.current}`;
+
+  const copyShareLink = () => {
+    navigator.clipboard.writeText(generateShareLink()).then(() => {
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2500);
+    });
+  };
+
+  const shareViaWhatsApp = () => {
+    const link = generateShareLink();
+    const text = encodeURIComponent(
+      `Join my Reckon video call! Room Code: ${roomCode} or click: ${link}`,
+    );
+    window.open(`https://wa.me/?text=${text}`, "_blank");
+  };
+
+  const sendBottomMessage = () => {
+    if (!bottomChatInput.trim() || !connectionRef.current) return;
+    connectionRef.current.send(bottomChatInput.trim());
+    setMessages((prev) => [...prev, mkMsg(bottomChatInput.trim(), "me")]);
+    setBottomChatInput("");
   };
 
   const toggleCam = () => {
@@ -427,6 +524,40 @@ export default function OmegleChat({ open, onClose }: Props) {
       for (const t of (localStreamRef.current as MediaStream).getAudioTracks())
         t.enabled = !micOn;
     setMicOn((v) => !v);
+  };
+
+  const switchCamera = async () => {
+    const newMode = facingMode === "user" ? "environment" : "user";
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 1280, height: 720, facingMode: newMode },
+        audio: false,
+      });
+      const newVideoTrack = newStream.getVideoTracks()[0];
+      // Replace in localStream
+      if (localStreamRef.current) {
+        const oldTrack = (
+          localStreamRef.current as MediaStream
+        ).getVideoTracks()[0];
+        (localStreamRef.current as MediaStream).removeTrack(oldTrack);
+        oldTrack.stop();
+        (localStreamRef.current as MediaStream).addTrack(newVideoTrack);
+      }
+      // Update local preview
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = localStreamRef.current;
+      }
+      // Replace in active call
+      if (callRef.current) {
+        const sender = callRef.current.peerConnection
+          ?.getSenders()
+          .find((s: any) => s.track?.kind === "video");
+        if (sender) sender.replaceTrack(newVideoTrack);
+      }
+      setFacingMode(newMode);
+    } catch {
+      // silently fail on devices without front/back cameras
+    }
   };
 
   const cycleMobilePanel = () => {
@@ -807,6 +938,7 @@ export default function OmegleChat({ open, onClose }: Props) {
                         aria-label="Search countdown timer"
                         role="img"
                       >
+                        <title>WhatsApp</title>
                         <circle
                           cx="44"
                           cy="44"
@@ -914,7 +1046,6 @@ export default function OmegleChat({ open, onClose }: Props) {
 
             {/* Local PiP */}
             <div className="absolute bottom-3 right-3 w-28 h-20 sm:w-36 sm:h-24 rounded-xl overflow-hidden border-2 border-cyan-500/50 shadow-lg shadow-cyan-500/20">
-              {/* biome-ignore lint/a11y/useMediaCaption: local camera preview */}
               <video
                 ref={localVideoRef}
                 autoPlay
@@ -973,6 +1104,38 @@ export default function OmegleChat({ open, onClose }: Props) {
                   )}
                   {copied ? "Copied!" : "Copy Room Code"}
                 </Button>
+                <button
+                  type="button"
+                  onClick={shareViaWhatsApp}
+                  className="w-full flex items-center justify-center gap-2 h-8 rounded-md text-xs font-medium text-white transition-all"
+                  style={{
+                    background: "rgba(37,211,102,0.2)",
+                    border: "1px solid rgba(37,211,102,0.4)",
+                    boxShadow: "0 0 10px rgba(37,211,102,0.2)",
+                  }}
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="currentColor"
+                    className="w-3.5 h-3.5 text-green-400"
+                  >
+                    <title>WhatsApp</title>
+                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
+                  </svg>
+                  Invite via WhatsApp
+                </button>
+                <button
+                  type="button"
+                  onClick={copyShareLink}
+                  className="w-full flex items-center justify-center gap-2 h-8 rounded-md text-xs font-medium text-white/70 transition-all hover:text-white"
+                  style={{
+                    background: "rgba(255,255,255,0.05)",
+                    border: "1px solid rgba(255,255,255,0.1)",
+                  }}
+                >
+                  <Copy className="w-3 h-3" />
+                  {copiedLink ? "Link Copied!" : "Copy Invite Link"}
+                </button>
               </div>
             )}
 
@@ -1007,6 +1170,21 @@ export default function OmegleChat({ open, onClose }: Props) {
                 ) : (
                   <MicOff className="w-4 h-4 text-red-300" />
                 )}
+              </button>
+
+              {/* Flip Camera button */}
+              <button
+                type="button"
+                data-ocid="omegle.toggle"
+                onClick={switchCamera}
+                title={
+                  facingMode === "user"
+                    ? "Switch to back camera"
+                    : "Switch to front camera"
+                }
+                className="w-9 h-9 rounded-full flex items-center justify-center border border-cyan-500/40 bg-cyan-500/15 hover:bg-cyan-500/30 transition-all active:scale-95"
+              >
+                <FlipHorizontal className="w-4 h-4 text-cyan-300" />
               </button>
 
               {/* Add User button – only when connected */}
@@ -1099,26 +1277,62 @@ export default function OmegleChat({ open, onClose }: Props) {
               {showRoomConnect && (
                 <div className="mt-2 space-y-2">
                   {/* Room code display */}
-                  <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-black/60 border border-cyan-500/30">
-                    <span
-                      className="text-lg font-mono font-bold tracking-[0.15em] text-cyan-300"
-                      style={{ textShadow: "0 0 10px rgba(6,182,212,0.7)" }}
-                    >
-                      {roomCode}
-                    </span>
-                    <Button
-                      data-ocid="omegle.secondary_button"
-                      size="sm"
-                      onClick={copyRoomCode}
-                      className="h-7 px-2 gap-1 bg-cyan-600/20 hover:bg-cyan-600/40 text-cyan-300 border border-cyan-500/30 text-xs"
-                    >
-                      {copied ? (
-                        <Check className="w-3 h-3" />
-                      ) : (
+                  <div className="flex flex-col gap-1.5 px-3 py-2 rounded-xl bg-black/60 border border-cyan-500/30">
+                    <div className="flex items-center justify-between">
+                      <span
+                        className="text-lg font-mono font-bold tracking-[0.15em] text-cyan-300"
+                        style={{ textShadow: "0 0 10px rgba(6,182,212,0.7)" }}
+                      >
+                        {roomCode}
+                      </span>
+                      <Button
+                        data-ocid="omegle.secondary_button"
+                        size="sm"
+                        onClick={copyRoomCode}
+                        className="h-7 px-2 gap-1 bg-cyan-600/20 hover:bg-cyan-600/40 text-cyan-300 border border-cyan-500/30 text-xs"
+                      >
+                        {copied ? (
+                          <Check className="w-3 h-3" />
+                        ) : (
+                          <Copy className="w-3 h-3" />
+                        )}
+                        {copied ? "Copied!" : "Copy"}
+                      </Button>
+                    </div>
+                    <div className="flex gap-1.5">
+                      <button
+                        type="button"
+                        onClick={shareViaWhatsApp}
+                        className="flex-1 flex items-center justify-center gap-1.5 h-7 rounded-lg text-[10px] font-medium text-white transition-all"
+                        style={{
+                          background: "rgba(37,211,102,0.2)",
+                          border: "1px solid rgba(37,211,102,0.4)",
+                          boxShadow: "0 0 8px rgba(37,211,102,0.15)",
+                        }}
+                      >
+                        <svg
+                          viewBox="0 0 24 24"
+                          fill="currentColor"
+                          className="w-3 h-3 text-green-400"
+                        >
+                          <title>WhatsApp</title>
+                          <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
+                        </svg>
+                        WhatsApp
+                      </button>
+                      <button
+                        type="button"
+                        onClick={copyShareLink}
+                        className="flex-1 flex items-center justify-center gap-1.5 h-7 rounded-lg text-[10px] font-medium text-white/60 transition-all hover:text-white"
+                        style={{
+                          background: "rgba(255,255,255,0.05)",
+                          border: "1px solid rgba(255,255,255,0.1)",
+                        }}
+                      >
                         <Copy className="w-3 h-3" />
-                      )}
-                      {copied ? "Copied!" : "Copy"}
-                    </Button>
+                        {copiedLink ? "Copied!" : "Copy Link"}
+                      </button>
+                    </div>
                   </div>
 
                   <div className="flex gap-2">
@@ -1167,6 +1381,59 @@ export default function OmegleChat({ open, onClose }: Props) {
             </div>
           </div>
         </div>
+
+        {/* Floating bottom chat bar when connected */}
+        {isConnected && (
+          <div
+            className="absolute bottom-16 left-2 right-2 z-40 flex gap-2 items-center px-3 py-2 rounded-xl backdrop-blur-md"
+            style={{
+              background: "rgba(0,0,0,0.65)",
+              border: "1px solid rgba(0,245,255,0.15)",
+              boxShadow: "0 0 20px rgba(0,245,255,0.08)",
+            }}
+          >
+            <div className="flex-1 min-w-0">
+              {messages.length > 0 && (
+                <p className="text-[10px] text-white/40 truncate mb-1">
+                  <span
+                    className={
+                      messages[messages.length - 1].from === "me"
+                        ? "text-cyan-400"
+                        : "text-pink-400"
+                    }
+                  >
+                    {messages[messages.length - 1].from === "me"
+                      ? "You"
+                      : peerMeta?.name || "Stranger"}
+                    :
+                  </span>{" "}
+                  {messages[messages.length - 1].text}
+                </p>
+              )}
+              <div className="flex gap-2">
+                <input
+                  value={bottomChatInput}
+                  onChange={(e) => setBottomChatInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && sendBottomMessage()}
+                  placeholder="Quick message..."
+                  className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white placeholder:text-white/30 focus:outline-none focus:border-cyan-500/40"
+                />
+                <button
+                  type="button"
+                  onClick={sendBottomMessage}
+                  disabled={!bottomChatInput.trim()}
+                  className="w-8 h-8 flex-shrink-0 rounded-lg flex items-center justify-center transition-all disabled:opacity-40"
+                  style={{
+                    background: "rgba(0,245,255,0.2)",
+                    border: "1px solid rgba(0,245,255,0.3)",
+                  }}
+                >
+                  <Send className="w-3.5 h-3.5 text-cyan-300" />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Desktop right panel */}
         {desktopRightPanel}

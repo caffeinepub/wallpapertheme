@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useReckon } from "../App";
+import AdBanner from "./AdBanner";
 
 interface LudoGameProps {
   open: boolean;
@@ -1392,6 +1393,7 @@ export default function LudoGame({ open, onClose }: LudoGameProps) {
             </div>
           </div>
         </div>
+        <AdBanner />
       </div>
     </div>
   );

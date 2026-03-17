@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
+import AdBanner from "./AdBanner";
 
 interface TicTacToe3DProps {
   open: boolean;
@@ -176,6 +177,7 @@ function ConfettiParticle({ index }: { index: number }) {
           }}
         />
       )}
+      <AdBanner />
     </motion.div>
   );
 }
@@ -287,6 +289,7 @@ function TrophyCelebration({ onDone }: { onDone: () => void }) {
           Tap to continue
         </motion.p>
       </motion.div>
+      <AdBanner />
     </motion.div>
   );
 }
